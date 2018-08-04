@@ -1,0 +1,12 @@
+[package]
+authors = ["Brandon Matthews <bmatthews@zipcar.com>"]
+name = "hal2"
+version = "0.1.0"
+
+[dependencies]
+cortex-m = "0.5.2"
+stm32l0x1 = "0.13.1"
+
+[dependencies.embedded-hal]
+version = "0.2.1"
+features = ["unproven"]
