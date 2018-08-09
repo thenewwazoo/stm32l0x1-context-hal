@@ -1,3 +1,8 @@
+//! STM32L0x1 Reset and Clock Control peripheral
+//!
+//! This module contains a partial abstraction over the RCC peripheral, as well as types and traits
+//! related to the various clocks on the chip.
+
 use common::Constrain;
 use flash;
 use power::{self, PowerContext};
@@ -17,24 +22,24 @@ impl Constrain<Rcc> for RCC {
             ccipr: CCIPR(()),
             cr: CR(()),
             csr: CSR(()),
-            cfgr: CFGR(()),
             icscr: ICSCR(()),
-            hclk_fclk: Hertz(2_097_000),
-            pclk1: Hertz(2_097_000),
-            pclk2: Hertz(2_097_000),
-            sysclk_src: clocking::SysClkSource::MSI,
-            //sysclk: Hertz(2_097_000),
-            lsi: clocking::LowSpeedInternalRC::new(),
-            msi: clocking::MediumSpeedInternalRC::new(true, clocking::MsiFreq::Hz_2_097_000),
-            hsi16: clocking::HighSpeedInternal16RC::new(),
-            //pll: PLL,
-            lse: None,
-            //hse: Option<HighSpeedExternalOSC>,
+            cfgr: CFGR {
+                hclk_fclk: Hertz(2_097_000),
+                pclk1: Hertz(2_097_000),
+                pclk2: Hertz(2_097_000),
+                sysclk_src: clocking::SysClkSource::MSI,
+                lsi: clocking::LowSpeedInternalRC::new(),
+                msi: clocking::MediumSpeedInternalRC::new(true, clocking::MsiFreq::Hz_2_097_000),
+                hsi16: clocking::HighSpeedInternal16RC::new(),
+                //pll: PLL,
+                lse: None,
+                //hse: Option<HighSpeedExternalOSC>,
+            },
         }
     }
 }
 
-/// Struct representing the RCC peripheral and its desired configuration
+/// Struct representing the RCC peripheral
 pub struct Rcc {
     /// AMBA High-performance Bus (AHB) registers.
     pub ahb: AHB,
@@ -54,20 +59,14 @@ pub struct Rcc {
     pub cfgr: CFGR,
     /// Internal clock sources calibration register
     pub icscr: ICSCR,
-    pub hclk_fclk: Hertz,
-    pub pclk1: Hertz,
-    pub pclk2: Hertz,
-    pub sysclk_src: clocking::SysClkSource,
-    pub lsi: clocking::LowSpeedInternalRC,
-    pub msi: clocking::MediumSpeedInternalRC,
-    pub hsi16: clocking::HighSpeedInternal16RC,
-    pub lse: Option<clocking::LowSpeedExternalOSC>,
-    //pub pll: clocking::PLL,
-    //pub hse: Option<clocking::HighSpeedExternalOSC>,
 }
 
 impl Rcc {
 
+    /// Configure the clocks and provide an operating context
+    ///
+    /// This method configures each clock according to the values set in the `cfgr` member of
+    /// `Rcc`, and provides an operating context for that particular clock configuration.
     pub fn clock_domain<F>(
         &mut self,
         flash: &mut flash::Flash,
@@ -77,23 +76,23 @@ impl Rcc {
     where
         F: FnMut(ClockContext, &mut PowerContext),
     {
-        let lsiclk = self.lsi.configure(&mut self.csr);
-        let msiclk = self.msi.configure(&mut self.icscr, &mut self.cr);
-        let hsi16clk = self.hsi16.configure(&mut self.icscr, &mut self.cr);
-        let lseclk = if let Some(lse) = self.lse.as_ref() {
+        let lsiclk = self.cfgr.lsi.configure(&mut self.csr);
+        let msiclk = self.cfgr.msi.configure(&mut self.icscr, &mut self.cr);
+        let hsi16clk = self.cfgr.hsi16.configure(&mut self.icscr, &mut self.cr);
+        let lseclk = if let Some(lse) = self.cfgr.lse.as_ref() {
             lse.configure(&mut self.apb1, &mut self.cr, &mut self.csr, pwr_ctx)
         } else {
             None
         };
 
-        let (sysclk, sw_bits) = match self.sysclk_src {
-            clocking::SysClkSource::MSI => (self.msi.freq().unwrap(), 0b00),
-            clocking::SysClkSource::HSI16 => (self.hsi16.freq().unwrap(), 0b01),
-            //clocking::SysClkSource::HSE => (self.hse.freq().unwrap(), 0b10),
-            //clocking::SysClkSource::PLLCLK => (self.pll.freq().unwrap(), 0b11),
+        let (sysclk, sw_bits) = match self.cfgr.sysclk_src {
+            clocking::SysClkSource::MSI => (self.cfgr.msi.freq().unwrap(), 0b00),
+            clocking::SysClkSource::HSI16 => (self.cfgr.hsi16.freq().unwrap(), 0b01),
+            //clocking::SysClkSource::HSE => (self.cfgr.hse.freq().unwrap(), 0b10),
+            //clocking::SysClkSource::PLLCLK => (self.cfgr.pll.freq().unwrap(), 0b11),
         };
 
-        let (hpre_bits, hpre_ratio) = match sysclk.0 / self.hclk_fclk.0 {
+        let (hpre_bits, hpre_ratio) = match sysclk.0 / self.cfgr.hclk_fclk.0 {
             0 => unreachable!(),
             1 => (0b0000, 1),
             2 => (0b1000, 2),
@@ -108,7 +107,7 @@ impl Rcc {
 
         let hclk = sysclk.0 / hpre_ratio;
 
-        let (ppre1_bits, ppre1_ratio) = match self.hclk_fclk.0 / self.pclk1.0 {
+        let (ppre1_bits, ppre1_ratio) = match self.cfgr.hclk_fclk.0 / self.cfgr.pclk1.0 {
             0 => unreachable!(),
             1 => (0b000, 1),
             2 => (0b100, 2),
@@ -119,7 +118,7 @@ impl Rcc {
 
         let pclk1 = Hertz(hclk / ppre1_ratio);
 
-        let (ppre2_bits, ppre2_ratio) = match self.hclk_fclk.0 / self.pclk2.0 {
+        let (ppre2_bits, ppre2_ratio) = match self.cfgr.hclk_fclk.0 / self.cfgr.pclk2.0 {
             0 => unreachable!(),
             1 => (0b011, 1),
             2 => (0b100, 2),
@@ -268,55 +267,90 @@ impl APB2 {
     }
 }
 
+/// I/O port register access
 pub struct IOP(());
 impl IOP {
+    /// Access IOPENR enable register
     pub fn enr(&mut self) -> &rcc::IOPENR {
         unsafe { &(*RCC::ptr()).iopenr }
     }
 
+    /// Access IOPRSTR reset register
     pub fn rstr(&mut self) -> &rcc::IOPRSTR {
         unsafe { &(*RCC::ptr()).ioprstr }
     }
 
+    /// Access IOPSMENR sleep mode register
     pub fn smenr(&mut self) -> &rcc::IOPSMEN {
         unsafe { &(*RCC::ptr()).iopsmen }
     }
 }
 
+/// Clock configuration register
 pub struct CCIPR(());
 impl CCIPR {
+    /// Direct access to RCC_CCIPR
     #[inline]
     pub fn inner(&mut self) -> &rcc::CCIPR {
         unsafe { &(*RCC::ptr()).ccipr }
     }
 }
 
+/// Clock control register
 pub struct CR(());
 impl CR {
+    /// Direct access to RCC_CR
     #[inline]
     pub fn inner(&mut self) -> &rcc::CR {
         unsafe { &(*RCC::ptr()).cr }
     }
 }
 
+/// Control/status register
 pub struct CSR(());
 impl CSR {
+    /// Direct access to RCC_CSR
     #[inline]
     pub fn inner(&mut self) -> &rcc::CSR {
         unsafe { &(*RCC::ptr()).csr }
     }
 }
 
-pub struct CFGR(());
+/// Clock configuration register
+pub struct CFGR {
+    /// Desired HCLK/FCLK frequency
+    pub hclk_fclk: Hertz,
+    /// Desired peripheral clock 1 frequency
+    pub pclk1: Hertz,
+    /// Desired peripheral clock 2 frequency
+    pub pclk2: Hertz,
+    /// SYSCLK source selection
+    pub sysclk_src: clocking::SysClkSource,
+    /// Low-speed internal RC configuration
+    pub lsi: clocking::LowSpeedInternalRC,
+    /// Medium-speed internal RC configuration
+    pub msi: clocking::MediumSpeedInternalRC,
+    /// High-speed 16 MHz internal RC configuration
+    pub hsi16: clocking::HighSpeedInternal16RC,
+    /// Low-speed external oscillator configuration
+    pub lse: Option<clocking::LowSpeedExternalOSC>,
+    //pub pll: clocking::PLL,
+    //pub hse: Option<clocking::HighSpeedExternalOSC>,
+}
+
+/// Clock configuration register
 impl CFGR {
+    /// Direct access to RCC_CFGR
     #[inline]
     pub fn inner(&mut self) -> &rcc::CFGR {
         unsafe { &(*RCC::ptr()).cfgr }
     }
 }
 
+/// Internal clock sources calibration register
 pub struct ICSCR(());
 impl ICSCR {
+    /// Direct access to RCC_ICSCR
     #[inline]
     pub fn inner(&mut self) -> &rcc::ICSCR {
         unsafe { &(*RCC::ptr()).icscr }

@@ -19,6 +19,7 @@ use stm32l0x1;
 ///
 /// Note: MUST not be implemented by user.
 pub trait InputMode {
+    /// Manipulate pull up/down bits
     fn modify_pupdr_bits(original: u32, offset: u32) -> u32;
 }
 
@@ -51,6 +52,7 @@ impl InputMode for PullUp {
 
 /// Input mode (type state)
 pub struct Input<MODE> {
+    #[doc(hidden)]
     _mode: PhantomData<MODE>,
 }
 
@@ -59,6 +61,7 @@ pub struct Input<MODE> {
 ///
 /// Note: MUST not be implemented by user.
 pub trait OutputMode {
+    /// Modify output type bits
     fn modify_otyper_bits(original: u32, idx: u8) -> u32;
 }
 
@@ -82,10 +85,17 @@ impl OutputMode for OpenDrain {
 
 /// Output mode (type state)
 pub struct Output<MODE, PUMODE> {
+    #[doc(hidden)]
     _mode: PhantomData<MODE>,
+    #[doc(hidden)]
     _pu: PhantomData<PUMODE>,
 }
 
+/// Pin drive strength
+///
+/// Note: Refer to the device datasheet for the frequency specifications and the power supply and
+/// load conditions for each speed.
+#[allow(missing_docs)]
 #[repr(C)]
 pub enum PinSpeed {
     Low = 0,
@@ -128,11 +138,6 @@ macro_rules! impl_parts {
                     unsafe { &(*$GPIOX::ptr()).ospeedr }
                 }
             }
-            impl BRR<$GPIOX> {
-                pub fn brr(&mut self) -> &stm32l0x1::$gpiox::BRR {
-                    unsafe { &(*$GPIOX::ptr()).brr }
-                }
-            }
          )+
     }
 }
@@ -163,8 +168,6 @@ macro_rules! impl_gpio {
             pub pupdr: PUPDR<$GPIOX>,
             /// Opaque OSPEEDR register
             pub ospeedr: OSPEEDR<$GPIOX>,
-            /// Opaque BRR register
-            pub brr: BRR<$GPIOX>,
             $(
                 /// Pin
                 pub $PXiL: $PXiL<Input<Floating>>,
@@ -176,6 +179,7 @@ macro_rules! impl_gpio {
         }
 
         impl $name {
+            /// Create a new GPIO module object
             pub fn new(iop: &mut rcc::IOP) -> Self {
                 iop.enr().modify(|_,w| w.$gpioen().set_bit());
                 while iop.enr().read().$gpioen().bit_is_clear() {}
@@ -186,7 +190,6 @@ macro_rules! impl_gpio {
                     otyper: OTYPER(PhantomData),
                     pupdr: PUPDR(PhantomData),
                     ospeedr: OSPEEDR(PhantomData),
-                    brr: BRR(PhantomData),
                     $(
                         $PXiL: $PXiL(PhantomData),
                     )*
@@ -195,35 +198,14 @@ macro_rules! impl_gpio {
                     )*
                 }
             }
-
-//            pub fn reset_pin<P, R: Reset<$GPIOX, P>>(&mut self, r: R) -> P {
-//                let _ = core::mem::replace(&mut r, r.reset(&mut self.brr));
-//                r
-//                //r.reset(&mut self.brr)
-//            }
         }
-
     }
 }
-
-//pub trait Reset<G, P> {
-//    fn reset(self, brr: &mut BRR<G>) -> P;
-//}
 
 macro_rules! impl_pin {
     ($GPIOX:ident, $PXi:ident, $AFR:ident, $i:expr) => {
         /// Specific Pin
         pub struct $PXi<MODE>(PhantomData<MODE>);
-
-//        impl<MODE> Reset<$GPIOX, $PXi<Input<Floating>>> for $PXi<MODE> {
-//
-//            fn reset(self, brr: &mut BRR<$GPIOX>) -> $PXi<Input<Floating>> {
-//
-//                brr.brr().write(|w| unsafe { w.bits(1 << $i) });
-//                $PXi(PhantomData)
-//            }
-//
-//        }
 
         impl<MODE> $PXi<MODE> {
             const OFFSET: u32 = 2 * $i;
@@ -236,6 +218,7 @@ macro_rules! impl_pin {
                 $PXi(PhantomData)
             }
 
+            /// Set pin drive strength
             #[inline]
             pub fn set_pin_speed(&self, spd: PinSpeed, ospeedr: &mut OSPEEDR<$GPIOX>) {
                 ospeedr
@@ -268,13 +251,11 @@ macro_rules! impl_pin {
         }
 
         impl<OMODE, PUMODE> OutputPin for $PXi<Output<OMODE, PUMODE>> {
-            /// Sets high bit.
             fn set_high(&mut self) {
                 // NOTE(unsafe) atomic write to a stateless register
                 unsafe { (*$GPIOX::ptr()).bsrr.write(|w| w.bits(1 << $i)) }
             }
 
-            /// Sets low bit.
             fn set_low(&mut self) {
                 // NOTE(unsafe) atomic write to a stateless register
                 unsafe { (*$GPIOX::ptr()).bsrr.write(|w| w.bits(1 << (16 + $i))) }
@@ -393,12 +374,11 @@ pub struct OTYPER<GPIO>(PhantomData<GPIO>);
 pub struct PUPDR<GPIO>(PhantomData<GPIO>);
 /// Opaque OSPEEDR register
 pub struct OSPEEDR<GPIO>(PhantomData<GPIO>);
-/// Opaque BRR register
-pub struct BRR<GPIO>(PhantomData<GPIO>);
 
 macro_rules! impl_af {
     ( [$($af:ident, $i:expr;)*] ) => {
         $(
+            /// Alternate function $af
             pub struct $af;
             impl AltFun for $af {
                 const NUM: u32 = $i;
@@ -412,6 +392,7 @@ macro_rules! impl_af {
 ///
 /// Note: MUST not be implemented by user.
 pub trait AltFun {
+    /// Number of the alternate function
     const NUM: u32;
 }
 

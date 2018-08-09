@@ -1,19 +1,32 @@
+//! STM32L0x1 Clocks
+//!
+//! This module contains types representing the various clocks on the STM32L0x1, both internal and
+//! external. Each clock's type implements a `configure` method (not a trait impl) that configures
+//! the clock in the RCC peripheral.
+
 use power;
 use rcc;
 use time::Hertz;
 
+/// Types of clocks that have a frequency
 pub trait ClkSrc {
+    /// Returns the frequency of the clock, if the clock exists, else `None`.
     fn freq(&self) -> Option<Hertz>;
 }
 
+/// Sources for the SYSCLK
 pub enum SysClkSource {
+    /// Medium-speed internal RC
     MSI,
+    /// High-speed 16MHz internal RC (optionally 4 MHz)
     HSI16,
     //HSE,
     //PLLCLK,
 }
 
+/// Low-speed internal RC
 pub struct LowSpeedInternalRC {
+    /// Should the LSI be powered on and released
     enable: bool,
 }
 
@@ -131,12 +144,19 @@ impl ClkSrc for MediumSpeedInternalRC {
 #[allow(non_camel_case_types)]
 /// Available MSI RC frequency ranges
 pub enum MsiFreq {
+    /// 65.536 kHz
     Hz_65_536 = 0b000,
+    /// 131.072 kHz
     Hz_131_072 = 0b001,
+    /// 262.144 kHz
     Hz_262_144 = 0b010,
+    /// 524.288 kHz
     Hz_524_288 = 0b011,
+    /// 1.048 MHz
     Hz_1_048_000 = 0b100,
+    /// 2.097 MHz
     Hz_2_097_000 = 0b101,
+    /// 4.194 MHz
     Hz_4_194_000 = 0b110,
 }
 

@@ -1,3 +1,5 @@
+//! Power configuration
+
 use common::Constrain;
 use rcc::{self, Rcc};
 use stm32l0x1::{pwr, PWR};
@@ -52,16 +54,20 @@ pub enum PowerError {
     LowVDD,
 }
 
+/// Power control register
 pub struct CR(());
 impl CR {
+    /// Direct access to PWR_CR
     #[inline]
     pub fn inner(&self) -> &pwr::CR {
         unsafe { &(*PWR::ptr()).cr }
     }
 }
 
+/// Power control/status register
 pub struct CSR(());
 impl CSR {
+    /// Direct access to PWR_CR
     #[inline]
     pub fn inner(&self) -> &pwr::CSR {
         unsafe { &(*PWR::ptr()).csr }
@@ -69,11 +75,14 @@ impl CSR {
 }
 
 impl Power {
-
+    /// Indicate the (externally-controlled) Vdd voltage range
+    ///
+    /// See 6.1 Power Supplies
     pub fn set_vdd_range(&mut self, r: VddRange) {
         self.vdd_range = r;
     }
 
+    /// Set the Vcore voltage range
     pub fn set_vcore_range(&mut self, vcore_range: VCoreRange) -> Result<(), PowerError> {
         if vcore_range == VCoreRange::Range1 && self.vdd_range == VddRange::Low {
             return Err(PowerError::LowVDD);
@@ -84,6 +93,7 @@ impl Power {
         Ok(())
     }
 
+    /// Return the Vcore voltage range currently configured
     pub fn get_vcore_range(&self) -> VCoreRange {
         match unsafe { &(*PWR::ptr()) }.cr.read().vos().bits() {
             0b01 => VCoreRange::Range1,
@@ -98,34 +108,7 @@ impl Power {
     /// This function provides an operating context for the MCU that guarantees a static power
     /// configuration. Because context moves self (and then returns/releases is), the power
     /// peripheral cannot be mutated from within the context-protected operation.
-    ///
-    /// ```rust
-    /// let mut pwr = p.PWR.constrain();
-    /// let mut rcc = p.RCC.constrain();
-    /// pwr.set_vcore_range(VCoreRange::Range1);
-    /// pwr.context(&mut rcc.apb1, |p_ctx| {
-    ///     rcc.select_sysclk_src(rcc::SysClkSrc::HSE);
-    ///     rcc.hse = Some(rcc::HighSpeedExternalOSC::new(24_000_000));
-    ///     rcc.context(p_ctx, |c_ctx| {
-    ///
-    ///         let gpioa = gpio::A::new(&mut c_ctx.iop);
-    ///
-    ///         let rx = gpioa.PA0.into_output::<PushPull, 2
-    ///             .into_output::<PushPull, Floating>(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.pupdr)
-    ///             .into_alt_fun::<AF4>(&mut gpioa.moder, &mut gpioa.afrl);
-    ///         rx.set_pin_speed(PinSpeed::VeryHigh, &mut gpioa.ospeedr);
-    ///
-    ///         let tx = gpioa.PA0.into_output::<PushPull, 2
-    ///             .into_output::<PushPull, Floating>(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.pupdr)
-    ///             .into_alt_fun::<AF4>(&mut gpioa.moder, &mut gpioa.afrl);
-    ///         tx.set_pin_speed(PinSpeed::VeryHigh, &mut gpioa.ospeedr);
-    ///
-    ///         let s = Serial::new(c_ctx, Baud(9600), rx, tx, ...);
-    ///     }
-    /// }
-    /// ```
     pub fn power_domain<F>(&mut self, rcc: &mut Rcc, mut op: F)
-    //pub fn power_domain<F>(&mut self, apb1: &mut rcc::APB1, mut op: F)
     where
         F: FnMut(&mut Rcc, PowerContext),
     {

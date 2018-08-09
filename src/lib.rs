@@ -1,4 +1,6 @@
+//! STM32L0x1 HAl
 #![no_std]
+#![deny(missing_docs)]
 
 extern crate cortex_m;
 pub extern crate stm32l0x1;
