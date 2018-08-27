@@ -79,7 +79,7 @@ pub struct MediumSpeedInternalRC {
 
 impl MediumSpeedInternalRC {
     /// Create a new MSI RC instance
-    pub (crate) fn new(enable: bool, freq: MsiFreq) -> Self {
+    pub(crate) fn new(enable: bool, freq: MsiFreq) -> Self {
         MediumSpeedInternalRC { enable, freq }
     }
 
@@ -94,9 +94,8 @@ impl MediumSpeedInternalRC {
     }
 
     /// Set the desired MSI frequency range
-    pub fn set_freq(mut self, f: MsiFreq) -> Self {
+    pub fn set_freq(&mut self, f: MsiFreq) {
         self.freq = f;
-        self
     }
 
     /// Convert the freq range to MSIRANGE bits (7.3.2)
@@ -105,7 +104,7 @@ impl MediumSpeedInternalRC {
     }
 
     /// Configures the MSI to the specified frequency
-    pub (crate) fn configure(&self, icscr: &mut rcc::ICSCR, cr: &mut rcc::CR) -> Option<Hertz> {
+    pub(crate) fn configure(&self, icscr: &mut rcc::ICSCR, cr: &mut rcc::CR) -> Option<Hertz> {
         if self.enable {
             icscr
                 .inner()
@@ -170,7 +169,7 @@ pub struct HighSpeedInternal16RC {
 
 impl HighSpeedInternal16RC {
     /// Instantiate a new HSI16
-    pub (crate) fn new() -> Self {
+    pub(crate) fn new() -> Self {
         HighSpeedInternal16RC {
             enable: false,
             div4: false,
@@ -185,6 +184,11 @@ impl HighSpeedInternal16RC {
     /// Request that the HSI16 RC be disabled
     pub fn disable(&mut self) {
         self.enable = false
+    }
+
+    /// Return whether the HSI16 clock will be divided by 4
+    pub fn is_div4(&self) -> bool {
+        self.div4
     }
 
     /// Request that the HSI16 clock be divided by 4
@@ -260,7 +264,7 @@ impl LowSpeedExternalOSC {
     }
 
     /// Enable the LSE, and wait for it to become ready
-    pub (crate) fn configure(
+    pub(crate) fn configure(
         &self,
         apb1: &mut rcc::APB1,
         cr: &mut rcc::CR,
@@ -291,4 +295,16 @@ impl ClkSrc for LowSpeedExternalOSC {
             None
         }
     }
+}
+
+/// Available clocks with which a USART can be driven.
+pub enum USARTClkSource {
+    /// U(S)ART-specific peripheral clock (PCLK1, PCLK2)
+    PCLK,
+    /// Core system clock
+    SYSCLK,
+    /// High-speed 16 MHz RC
+    HSI16,
+    /// Low-speed external osc
+    LSE,
 }

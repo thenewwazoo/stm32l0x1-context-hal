@@ -1,8 +1,9 @@
 //! Power configuration
 
 use common::Constrain;
+use cortex_m::{self, asm};
 use rcc::{self, Rcc};
-use stm32l0x1::{pwr, PWR};
+use stm32l0x1::{pwr, DBG, PWR, RCC};
 
 impl Constrain<Power> for PWR {
     fn constrain(self) -> Power {
@@ -108,13 +109,15 @@ impl Power {
     /// This function provides an operating context for the MCU that guarantees a static power
     /// configuration. Because context moves self (and then returns/releases is), the power
     /// peripheral cannot be mutated from within the context-protected operation.
-    pub fn power_domain<F>(&mut self, rcc: &mut Rcc, mut op: F)
+    pub fn power_domain<F>(&mut self, rcc: &mut Rcc, ulp: bool, mut op: F)
     where
         F: FnMut(&mut Rcc, PowerContext),
     {
         // Enable configuration of the PWR peripheral
         rcc.apb1.enr().modify(|_, w| w.pwren().set_bit());
         while !rcc.apb1.enr().read().pwren().bit_is_set() {}
+
+        self.cr.inner().modify(|_,w| w.ulp().bit(ulp));
 
         // Set VCore range. Procedure from sec 6.1.5 Dynamic voltage scaling configuration
 
@@ -142,11 +145,15 @@ impl Power {
         rcc.apb1.enr().modify(|_, w| w.pwren().clear_bit());
         while rcc.apb1.enr().read().pwren().bit_is_set() {}
 
-        op(rcc, PowerContext {
-            vdd_range: self.vdd_range,
-            vcore_range: self.get_vcore_range(),
-            cr: &self.cr,
-        });
+        op(
+            rcc,
+            PowerContext {
+                vdd_range: self.vdd_range,
+                vcore_range: self.get_vcore_range(),
+                cr: &mut self.cr,
+                csr: &mut self.csr,
+            },
+        );
     }
 }
 
@@ -157,8 +164,8 @@ pub struct PowerContext<'pwr> {
     /// The VCore range under which the chip currently operates
     pub vcore_range: VCoreRange,
     /// A control register handle used to provide RTC domain access
-    //cr: &'pwr mut CR,
-    cr: &'pwr CR,
+    cr: &'pwr mut CR,
+    csr: &'pwr mut CSR,
 }
 
 impl<'pwr> PowerContext<'pwr> {
@@ -191,4 +198,112 @@ impl<'pwr> PowerContext<'pwr> {
         apb1.enr().modify(|_, w| w.pwren().clear_bit());
         while apb1.enr().read().pwren().bit_is_set() {}
     }
+
+    /// Enter low-power SLEEP mode
+    pub fn enter_low_power_sleep(
+        &mut self,
+        scb: &mut cortex_m::peripheral::SCB,
+        sleep_method: SleepMethod,
+        fast_wakeup: bool,
+    ) {
+
+        if cortex_m::peripheral::DCB::is_debugger_attached() {
+            unsafe { &(*DBG::ptr()) }.cr.modify(|_, w| w.dbg_sleep().set_bit());
+            // 27.9.1 When one of the DBG_STANDBY, DBG_STOP and DBG_SLEEP bit is set and the
+            //    internal reference voltage is stopped in low-power mode (ULP bit set in
+            //    PWR_CR register), then the Fast wakeup must be enabled (FWU bit set in
+            //    PWR_CR).
+
+            if self.cr.inner().read().ulp().bit_is_set() {
+                self.cr.inner().modify(|_,w| w.fwu().set_bit());
+            }
+        } else {
+            self.cr.inner().modify(|_,w| w.fwu().bit(fast_wakeup));
+        }
+        // NOTE `lpds` below is NOT LPDS, it's LPSDSR!!!
+        self.cr.inner().modify(|_,w| w.lpds().set_bit().lprun().set_bit().pdds().clear_bit());
+
+        scb.clear_sleepdeep();
+
+        match sleep_method {
+            SleepMethod::WFI => asm::wfi(),
+            SleepMethod::WFE => asm::wfe(),
+            SleepMethod::SleepOnExit => unimplemented!(),
+        };
+    }
+
+    /*
+    /// Enter STOP mode
+    ///
+    /// TODO does not work
+    pub fn enter_stop(
+        &mut self,
+        dcb: &mut cortex_m::peripheral::DCB,
+        scb: &mut cortex_m::peripheral::SCB,
+        sleep_method: SleepMethod,
+        wake_clk: StopWakeClk,
+        ulp: bool,
+    ) {
+
+        if dcb.is_debugger_attached() {
+            unsafe { &(*DBG::ptr()) }
+                .cr
+                .modify(|_, w| w.dbg_stop().set_bit());
+            if ulp {
+                // 27.9.1 When one of the DBG_STANDBY, DBG_STOP and DBG_SLEEP bit is set and the
+                //    internal reference voltage is stopped in low-power mode (ULP bit set in
+                //    PWR_CR register), then the Fast wakeup must be enabled (FWU bit set in
+                //    PWR_CR).
+                unsafe { &(*PWR::ptr()) }.cr.modify(|_,w| w.fwu().set_bit());
+            }
+        }
+
+        scb.set_sleepdeep();
+
+        self.cr
+            .inner()
+            .modify(|_, w| w.cwuf().set_bit());
+        while self.csr.inner().read().wuf().bit_is_set() {}
+
+        self.cr.inner().modify(|_,w| w.lpds().clear_bit().pdds().clear_bit().ulp().bit(ulp));
+
+        let rcc = unsafe { &(*RCC::ptr()) }; // Fuckery rating: 2/10. I do this to avoid having some kind of pwren_context or attaching this mechanism to a ClockContext.
+        rcc.apb1enr.modify(|_, w| w.pwren().set_bit());
+        while rcc.apb1enr.read().pwren().bit_is_clear() {}
+
+        match wake_clk {
+            StopWakeClk::MSI => rcc.cfgr.modify(|_, w| w.stopwuck().clear_bit()),
+            StopWakeClk::HSI16 => rcc.cfgr.modify(|_, w| w.stopwuck().set_bit()),
+        };
+
+        match sleep_method {
+            SleepMethod::WFI => asm::wfi(),
+            SleepMethod::WFE => asm::wfe(),
+            SleepMethod::SleepOnExit => unimplemented!(),
+        };
+
+        scb.clear_sleepdeep();
+
+        rcc.apb1enr.modify(|_, w| w.pwren().clear_bit());
+        while rcc.apb1enr.read().pwren().bit_is_set() {}
+    }
+    */
+}
+
+/// Select the clock to use upon wake from stop mode
+pub enum StopWakeClk {
+    /// MSI
+    MSI,
+    /// HSI16
+    HSI16,
+}
+
+/// How should the power peripheral sleep
+pub enum SleepMethod {
+    /// Use WFI to sleep
+    WFI,
+    /// Use WFE to sleep
+    WFE,
+    /// Set SLEEPONEXIT bit
+    SleepOnExit,
 }

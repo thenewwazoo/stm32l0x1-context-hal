@@ -1,6 +1,7 @@
 //! Flash memory
 
 use common::Constrain;
+use power::VCoreRange;
 use stm32l0x1::{flash, FLASH};
 use time::Hertz;
 
@@ -21,15 +22,30 @@ impl Flash {
     ///
     /// Because flash latency depends on core system clock, we want to make sure it does not
     /// change. This method provides an operating context for that.
-    pub fn latency_domain<F>(&mut self, sysclk: Hertz, mut op: F)
+    pub fn latency_domain<F>(&mut self, sysclk: Hertz, vcore: VCoreRange, mut op: F)
     where
         F: FnMut(),
     {
-        if sysclk.0 > 16_000_000 {
-            self.acr.flash_latency_1();
-        } else {
-            self.acr.flash_latency_0();
-        }
+        // Taken from fig. 11 "Performance versus Vdd and Vcore range"
+        match vcore {
+            VCoreRange::Range3 => {
+                self.acr.flash_latency_0();
+            }
+            VCoreRange::Range2 => {
+                if sysclk.0 > 8_000_000 {
+                    self.acr.flash_latency_1();
+                } else {
+                    self.acr.flash_latency_0();
+                }
+            }
+            VCoreRange::Range1 => {
+                if sysclk.0 > 16_000_000 {
+                    self.acr.flash_latency_1();
+                } else {
+                    self.acr.flash_latency_0();
+                }
+            }
+        };
 
         op();
     }

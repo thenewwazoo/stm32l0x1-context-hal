@@ -5,8 +5,8 @@
 
 use common::Constrain;
 use flash;
+use power::VCoreRange;
 use power::{self, PowerContext};
-use rcc::clocking::ClkSrc;
 use stm32l0x1::{rcc, RCC};
 use time::Hertz;
 
@@ -62,7 +62,6 @@ pub struct Rcc {
 }
 
 impl Rcc {
-
     /// Configure the clocks and provide an operating context
     ///
     /// This method configures each clock according to the values set in the `cfgr` member of
@@ -72,24 +71,35 @@ impl Rcc {
         flash: &mut flash::Flash,
         pwr_ctx: &mut power::PowerContext,
         mut op: F,
-    )
-    where
+    ) where
         F: FnMut(ClockContext, &mut PowerContext),
     {
-        let lsiclk = self.cfgr.lsi.configure(&mut self.csr);
-        let msiclk = self.cfgr.msi.configure(&mut self.icscr, &mut self.cr);
-        let hsi16clk = self.cfgr.hsi16.configure(&mut self.icscr, &mut self.cr);
-        let lseclk = if let Some(lse) = self.cfgr.lse.as_ref() {
-            lse.configure(&mut self.apb1, &mut self.cr, &mut self.csr, pwr_ctx)
-        } else {
-            None
-        };
+        // Enable the system configuration clock so our changes will take effect.
+        self.apb2.enr().modify(|_, w| w.syscfgen().set_bit());
+        while !self.apb2.enr().read().syscfgen().bit_is_set() {}
 
-        let (sysclk, sw_bits) = match self.cfgr.sysclk_src {
-            clocking::SysClkSource::MSI => (self.cfgr.msi.freq().unwrap(), 0b00),
-            clocking::SysClkSource::HSI16 => (self.cfgr.hsi16.freq().unwrap(), 0b01),
-            //clocking::SysClkSource::HSE => (self.cfgr.hse.freq().unwrap(), 0b10),
-            //clocking::SysClkSource::PLLCLK => (self.cfgr.pll.freq().unwrap(), 0b11),
+        // Configure the clock to which we will switch early. We will then do some ancillary tasks
+        // and switch to it before dealing with any other clocks. This assures that we can turn off
+        // the current sysclk source if necessary.
+        let sysclk = match self.cfgr.sysclk_src {
+            clocking::SysClkSource::MSI => self.cfgr.msi.configure(&mut self.icscr, &mut self.cr),
+            clocking::SysClkSource::HSI16 => {
+                self.cfgr.hsi16.configure(&mut self.icscr, &mut self.cr)
+            } //clocking::SysClkSource::HSE => ...
+              //clocking::SysClkSource::PLLCLK => ...
+        }.expect("selected SYSCLK source is not enabled!");
+
+        // Taken from fig. 11 "Performance versus Vdd and Vcore range"
+        match pwr_ctx.vcore_range {
+            VCoreRange::Range3 => if sysclk.0 > 4_200_000 {
+                panic!("sysclk too high for vcore range 1");
+            },
+            VCoreRange::Range2 => if sysclk.0 > 16_000_000 {
+                panic!("sysclk too high for vcore range 2");
+            },
+            VCoreRange::Range1 => if sysclk.0 > 32_000_000 {
+                panic!("sysclk too high for vcore range 3");
+            },
         };
 
         let (hpre_bits, hpre_ratio) = match sysclk.0 / self.cfgr.hclk_fclk.0 {
@@ -120,7 +130,7 @@ impl Rcc {
 
         let (ppre2_bits, ppre2_ratio) = match self.cfgr.hclk_fclk.0 / self.cfgr.pclk2.0 {
             0 => unreachable!(),
-            1 => (0b011, 1),
+            1 => (0b000, 1),
             2 => (0b100, 2),
             3...5 => (0b101, 4),
             6...11 => (0b110, 8),
@@ -130,7 +140,15 @@ impl Rcc {
         let pclk2 = Hertz(hclk / ppre2_ratio);
         let hclk = Hertz(hclk);
 
-        flash.latency_domain(sysclk, || {
+        let sw_bits = match self.cfgr.sysclk_src {
+            clocking::SysClkSource::MSI => 0b00,
+            clocking::SysClkSource::HSI16 => 0b01,
+            //clocking::SysClkSource::HSE => 0b10,
+            //clocking::SysClkSource::PLLCLK => 0b11,
+        };
+
+        // Now switch clocks
+        flash.latency_domain(sysclk, pwr_ctx.vcore_range, || {
             self.cfgr.inner().write(|w| unsafe {
                 w.ppre1()
                     .bits(ppre1_bits)
@@ -142,23 +160,35 @@ impl Rcc {
                     .bits(sw_bits)
             });
 
-            op(ClockContext {
-                sysclk,
-                hclk,
-                pclk1,
-                pclk2,
-                lsiclk,
-                msiclk,
-                hsi16clk,
-                lseclk,
-                iop: &mut self.iop
-            }, pwr_ctx);
+            // Configure the remaining clocks, including possibly turning them off.
+            let lsiclk = self.cfgr.lsi.configure(&mut self.csr);
+            let msiclk = self.cfgr.msi.configure(&mut self.icscr, &mut self.cr);
+            let hsi16clk = self.cfgr.hsi16.configure(&mut self.icscr, &mut self.cr);
+            let lseclk = if let Some(lse) = self.cfgr.lse.as_ref() {
+                lse.configure(&mut self.apb1, &mut self.cr, &mut self.csr, pwr_ctx)
+            } else {
+                None
+            };
+
+            op(
+                ClockContext {
+                    sysclk,
+                    hclk,
+                    pclk1,
+                    pclk2,
+                    lsiclk,
+                    msiclk,
+                    hsi16clk,
+                    lseclk,
+                },
+                pwr_ctx,
+            );
         });
     }
 }
 
 /// "Frozen" clock context
-pub struct ClockContext<'rcc> {
+pub struct ClockContext {
     /// Core system clock
     sysclk: Hertz,
     /// HCLK/FCLK
@@ -175,11 +205,9 @@ pub struct ClockContext<'rcc> {
     hsi16clk: Option<Hertz>,
     /// Low-speed external 32kHz clock speed
     lseclk: Option<Hertz>,
-    /// GPIO port configuration
-    pub iop: &'rcc mut IOP,
 }
 
-impl<'rcc> ClockContext<'rcc> {
+impl ClockContext {
     /// Returns the frequency of the system clock SYSCLK, also CK_PWR
     pub fn sysclk(&self) -> Hertz {
         self.sysclk
@@ -342,7 +370,7 @@ pub struct CFGR {
 impl CFGR {
     /// Direct access to RCC_CFGR
     #[inline]
-    pub fn inner(&mut self) -> &rcc::CFGR {
+    pub(crate) fn inner(&mut self) -> &rcc::CFGR {
         unsafe { &(*RCC::ptr()).cfgr }
     }
 }
