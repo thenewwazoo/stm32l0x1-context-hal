@@ -9,6 +9,7 @@ extern crate embedded_hal as hal;
 extern crate nb;
 pub extern crate stm32l0x1;
 
+pub mod adc;
 pub mod common;
 pub mod flash;
 pub mod gpio;

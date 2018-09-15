@@ -3,7 +3,7 @@
 use common::Constrain;
 use cortex_m::{self, asm};
 use rcc::{self, Rcc};
-use stm32l0x1::{pwr, DBG, PWR, RCC};
+use stm32l0x1::{pwr, DBG, PWR};
 
 impl Constrain<Power> for PWR {
     fn constrain(self) -> Power {
@@ -155,7 +155,7 @@ impl Power {
                 vdd_range: self.vdd_range,
                 vcore_range: self.get_vcore_range(),
                 cr: &mut self.cr,
-                csr: &mut self.csr,
+                //csr: &mut self.csr,
             },
         );
     }
@@ -180,7 +180,7 @@ pub struct PowerContext<'pwr> {
     pub vcore_range: VCoreRange,
     /// A control register handle used to provide RTC domain access
     cr: &'pwr mut CR,
-    csr: &'pwr mut CSR,
+    //csr: &'pwr mut CSR,
 }
 
 /// A frozen power peripheral configuration

@@ -14,6 +14,24 @@ use rcc;
 
 use stm32l0x1;
 
+/// Analog mode trait
+/// Implemented only for corresponding structs.
+///
+/// Note: MUST not be implemented by user.
+pub trait AnalogMode {
+    /// Used to set pin to floating
+    fn modify_pupdr_bits(original: u32, offset: u32) -> u32;
+}
+
+/// Analog mode (type state)
+pub struct Analog(());
+impl AnalogMode for Analog {
+    #[inline]
+    fn modify_pupdr_bits(original: u32, offset: u32) -> u32 {
+        original & !(0b11 << offset)
+    }
+}
+
 /// Input Mode Trait
 /// Implemented only for corresponding structs.
 ///
@@ -170,11 +188,11 @@ macro_rules! impl_gpio {
             pub ospeedr: OSPEEDR<$GPIOX>,
             $(
                 /// Pin
-                pub $PXiL: $PXiL<Input<Floating>>,
+                pub $PXiL: $PXiL<Analog>,
             )*
             $(
                 /// Pin
-                pub $PXiH: $PXiH<Input<Floating>>,
+                pub $PXiH: $PXiH<Analog>,
             )*
         }
 
@@ -209,6 +227,22 @@ macro_rules! impl_pin {
 
         impl<MODE> $PXi<MODE> {
             const OFFSET: u32 = 2 * $i;
+
+            /// Configures the PIN to operate as a high-impedance analog input
+            pub fn into_analog(
+                self,
+                moder: &mut MODER<$GPIOX>,
+                pupdr: &mut PUPDR<$GPIOX>,
+            ) -> $PXi<Analog> {
+                pupdr.pupdr().modify(|r, w| unsafe {
+                    w.bits(Analog::modify_pupdr_bits(r.bits(), Self::OFFSET))
+                });
+                moder
+                    .moder()
+                    .modify(|r, w| unsafe { w.bits(r.bits() | (0b11 << Self::OFFSET)) });
+
+                $PXi(PhantomData)
+            }
 
             /// Configures the PIN to operate as Input Pin according to Mode.
             pub fn into_input<Mode: InputMode>(
