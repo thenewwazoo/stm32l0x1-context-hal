@@ -12,6 +12,7 @@ pub extern crate stm32l0x1;
 pub mod common;
 pub mod flash;
 pub mod gpio;
+pub mod i2c;
 pub mod power;
 pub mod rcc;
 pub mod serial;

@@ -104,20 +104,12 @@ impl Power {
         }
     }
 
-    /// Operate within the currently configured power context
-    ///
-    /// This function provides an operating context for the MCU that guarantees a static power
-    /// configuration. Because context moves self (and then returns/releases is), the power
-    /// peripheral cannot be mutated from within the context-protected operation.
-    pub fn power_domain<F>(&mut self, rcc: &mut Rcc, ulp: bool, mut op: F)
-    where
-        F: FnMut(&mut Rcc, PowerContext),
-    {
+    fn configure_power(&mut self, rcc: &mut Rcc, ulp: bool) {
         // Enable configuration of the PWR peripheral
         rcc.apb1.enr().modify(|_, w| w.pwren().set_bit());
         while !rcc.apb1.enr().read().pwren().bit_is_set() {}
 
-        self.cr.inner().modify(|_,w| w.ulp().bit(ulp));
+        self.cr.inner().modify(|_, w| w.ulp().bit(ulp));
 
         // Set VCore range. Procedure from sec 6.1.5 Dynamic voltage scaling configuration
 
@@ -144,6 +136,18 @@ impl Power {
 
         rcc.apb1.enr().modify(|_, w| w.pwren().clear_bit());
         while rcc.apb1.enr().read().pwren().bit_is_set() {}
+    }
+
+    /// Operate within the currently configured power context
+    ///
+    /// This function provides an operating context for the MCU that guarantees a static power
+    /// configuration. Because context moves self (and then returns/releases is), the power
+    /// peripheral cannot be mutated from within the context-protected operation.
+    pub fn power_domain<F>(&mut self, rcc: &mut Rcc, ulp: bool, mut op: F)
+    where
+        F: FnMut(&mut Rcc, PowerContext),
+    {
+        self.configure_power(rcc, ulp);
 
         op(
             rcc,
@@ -154,6 +158,17 @@ impl Power {
                 csr: &mut self.csr,
             },
         );
+    }
+
+    /// Freeze the power configuration. This is a "destructive" operation that will prevent you
+    /// from (sanely) reconfiguring the power peripheral.
+    pub fn freeze(mut self, rcc: &mut Rcc, ulp: bool) -> PowerConfig {
+        self.configure_power(rcc, ulp);
+
+        PowerConfig {
+            vdd_range: self.vdd_range,
+            vcore_range: self.get_vcore_range(),
+        }
     }
 }
 
@@ -166,6 +181,14 @@ pub struct PowerContext<'pwr> {
     /// A control register handle used to provide RTC domain access
     cr: &'pwr mut CR,
     csr: &'pwr mut CSR,
+}
+
+/// A frozen power peripheral configuration
+pub struct PowerConfig {
+    /// The VDD range provided to the chip
+    pub vdd_range: VddRange,
+    /// The VCore range under which the chip currently operates
+    pub vcore_range: VCoreRange,
 }
 
 impl<'pwr> PowerContext<'pwr> {
@@ -206,22 +229,25 @@ impl<'pwr> PowerContext<'pwr> {
         sleep_method: SleepMethod,
         fast_wakeup: bool,
     ) {
-
         if cortex_m::peripheral::DCB::is_debugger_attached() {
-            unsafe { &(*DBG::ptr()) }.cr.modify(|_, w| w.dbg_sleep().set_bit());
+            unsafe { &(*DBG::ptr()) }
+                .cr
+                .modify(|_, w| w.dbg_sleep().set_bit());
             // 27.9.1 When one of the DBG_STANDBY, DBG_STOP and DBG_SLEEP bit is set and the
             //    internal reference voltage is stopped in low-power mode (ULP bit set in
             //    PWR_CR register), then the Fast wakeup must be enabled (FWU bit set in
             //    PWR_CR).
 
             if self.cr.inner().read().ulp().bit_is_set() {
-                self.cr.inner().modify(|_,w| w.fwu().set_bit());
+                self.cr.inner().modify(|_, w| w.fwu().set_bit());
             }
         } else {
-            self.cr.inner().modify(|_,w| w.fwu().bit(fast_wakeup));
+            self.cr.inner().modify(|_, w| w.fwu().bit(fast_wakeup));
         }
         // NOTE `lpds` below is NOT LPDS, it's LPSDSR!!!
-        self.cr.inner().modify(|_,w| w.lpds().set_bit().lprun().set_bit().pdds().clear_bit());
+        self.cr
+            .inner()
+            .modify(|_, w| w.lpds().set_bit().lprun().set_bit().pdds().clear_bit());
 
         scb.clear_sleepdeep();
 

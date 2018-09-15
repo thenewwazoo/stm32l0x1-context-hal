@@ -1,27 +1,33 @@
 [package]
 authors = ["Brandon Matthews <bmatthews@zipcar.com>"]
 name = "hal2"
-version = "0.2.0"
+version = "0.2.1"
 
 [dependencies]
 nb = "0.1.1"
 stm32l0x1 = "0.13.1"
 
-[features]
-default = ["rt"]
-rt = ["stm32l0x1/rt"]
-STM32L011x4 = []
-STM32L011x3 = []
-STM32L031x4 = []
-STM32L031x6 = []
+[dependencies.cortex-m]
+version = "0.5.7"
 
 [dependencies.embedded-hal]
 features = ["unproven"]
 version = "0.2.1"
 
-[dependencies.cortex-m]
-version = "0.5.4"
+[features]
+STM32L011x3 = []
+STM32L011x4 = []
+STM32L031x4 = []
+STM32L031x6 = []
+default = ["rt"]
+rt = ["stm32l0x1/rt"]
+
+[patch]
 
 [patch.crates-io]
-cortex-m = { path = "/Users/bmatt/Development/cake/cortex-m" }
-stm32l0x1 = { path = "../stm32l0x1/" }
+
+[patch.crates-io.cortex-m]
+path = "/Users/bmatt/Development/rust/cortex-m"
+
+[patch.crates-io.stm32l0x1]
+path = "../stm32l0x1/"

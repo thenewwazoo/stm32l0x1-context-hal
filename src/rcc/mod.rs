@@ -165,7 +165,7 @@ impl Rcc {
             let msiclk = self.cfgr.msi.configure(&mut self.icscr, &mut self.cr);
             let hsi16clk = self.cfgr.hsi16.configure(&mut self.icscr, &mut self.cr);
             let lseclk = if let Some(lse) = self.cfgr.lse.as_ref() {
-                lse.configure(&mut self.apb1, &mut self.cr, &mut self.csr, pwr_ctx)
+                lse.configure(&mut self.apb1, &mut self.cr, &mut self.csr, Some(pwr_ctx))
             } else {
                 None
             };

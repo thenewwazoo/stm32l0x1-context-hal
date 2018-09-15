@@ -407,10 +407,12 @@ impl Serial<LPUART1> {
         // 6. Set the RE bit LPUART_CR1. This enables the receiver which begins searching for a start bit.
         self.usart.cr1.modify(
             |_, w| {
-                w
-                                        .pce().clear_bit()   // parity control disabled
-                                        .te().set_bit()      // enable tx
-                                        .re().set_bit()
+                w.pce()
+                    .clear_bit() // parity control disabled
+                    .te()
+                    .set_bit() // enable tx
+                    .re()
+                    .set_bit()
             }, // enable rx
         );
 
