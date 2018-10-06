@@ -13,6 +13,7 @@ version = "0.5.7"
 [dependencies.embedded-hal]
 features = ["unproven"]
 version = "0.2.1"
+path = "/Users/bmatt/Development/rust/embedded-hal/"
 
 [features]
 STM32L011x3 = []
@@ -21,13 +22,3 @@ STM32L031x4 = []
 STM32L031x6 = []
 default = ["rt"]
 rt = ["stm32l0x1/rt"]
-
-[patch]
-
-[patch.crates-io]
-
-[patch.crates-io.cortex-m]
-path = "/Users/bmatt/Development/rust/cortex-m"
-
-[patch.crates-io.stm32l0x1]
-path = "../stm32l0x1/"

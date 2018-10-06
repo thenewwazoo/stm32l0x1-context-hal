@@ -198,7 +198,7 @@ macro_rules! impl_gpio {
 
         impl $name {
             /// Create a new GPIO module object
-            pub fn new(iop: &mut rcc::IOP) -> Self {
+            pub fn new(_gpio: $GPIOX, iop: &mut rcc::IOP) -> Self {
                 iop.enr().modify(|_,w| w.$gpioen().set_bit());
                 while iop.enr().read().$gpioen().bit_is_clear() {}
                 Self {

@@ -7,9 +7,8 @@ use gpio::Analog;
 use gpio::{PA0, PA1, PA2, PA3, PA4, PA5, PA6, PA7, PB0, PB1};
 use hal::analog::{AdcChannel, SingleMode};
 use nb;
-use power::PowerContext;
-use power::VCoreRange;
-use rcc::ClockContext;
+use power::{self, VCoreRange};
+use rcc::{self, ClockContext};
 use stm32l0x1::{adc, ADC, RCC};
 
 /// ADC related errors
@@ -244,45 +243,26 @@ where
     MODE: RunMode,
 {
     /// Create a new adc
-    pub fn new(
+    pub fn new<'p, 'f, VDD, VCORE, RTC>(
         raw: ADC,
-    ) -> Adc<RES, MODE> {
-
-        // This is bad, but is intended as a temporary workaround until I have time to implement
-        // the operation domain context model for the ADC (or permit mutation of the APB1ENR
-        // register via a ClockContext). Until then:
-        let apb2 = unsafe { &(*RCC::ptr()).apb2enr };
-        apb2.modify(|_, w| w.adcen().set_bit());
-        while apb2.read().adcen().bit_is_clear() {}
-
-        let mut adc = Adc {
-            adc: raw,
-            cal_fact: 0,
-            _res: PhantomData,
-            _mode: PhantomData,
-        };
-
-        adc.adc().cfgr1.modify(|_, w| unsafe { MODE::cfg(w).res().bits(RES::BITS).autoff().set_bit() });
-
-        adc.calibrate();
-
-        adc
-
-    }
-
-    /// Operate in the configured ADC domain
-    pub fn adc_domain<F>(
-        &mut self,
         samp_time: Duration,
         clk_src: AdcClkSrc,
-        pwr_ctx: &PowerContext,
-        clk_ctx: &ClockContext,
-        mut op: F,
-    ) where F: FnMut(&mut Self, &PowerContext, &ClockContext) {
+        pwr: &power::Power<VDD, VCORE, RTC>,
+        clk_ctx: &ClockContext<'p, 'f, VDD, VCORE, RTC>,
+        apb2: &mut rcc::APB2,
+    ) -> Adc<RES, MODE>
+    where
+        VCORE: power::Vos,
+    {
+        apb2.enr().modify(|_, w| w.adcen().set_bit());
+        while apb2.enr().read().adcen().bit_is_clear() {}
+
+        raw.cfgr1
+            .modify(|_, w| unsafe { MODE::cfg(w).res().bits(RES::BITS).autoff().set_bit() });
 
         let fadc_limits = (
             140_000,
-            match pwr_ctx.vcore_range {
+            match pwr.read_vcore_range() {
                 VCoreRange::Range1 => 16_000_000,
                 VCoreRange::Range2 => 8_000_000,
                 VCoreRange::Range3 => 4_000_000,
@@ -296,13 +276,13 @@ where
                 }
 
                 if clk_ctx.apb2().0 <= fadc_limits.1 {
-                    self.adc().cfgr2.modify(|_, w| unsafe { w.ckmode().bits(0b11) });
+                    raw.cfgr2.modify(|_, w| unsafe { w.ckmode().bits(0b11) });
                     clk_ctx.apb2().0
                 } else if clk_ctx.apb2().0 / 2 <= fadc_limits.1 {
-                    self.adc().cfgr2.modify(|_, w| unsafe { w.ckmode().bits(0b01) });
+                    raw.cfgr2.modify(|_, w| unsafe { w.ckmode().bits(0b01) });
                     clk_ctx.apb2().0 / 2
                 } else if clk_ctx.apb2().0 / 4 <= fadc_limits.1 {
-                    self.adc().cfgr2.modify(|_, w| unsafe { w.ckmode().bits(0b10) });
+                    raw.cfgr2.modify(|_, w| unsafe { w.ckmode().bits(0b10) });
                     clk_ctx.apb2().0 / 4
                 } else {
                     panic!("pclk too high to drive adc");
@@ -310,19 +290,19 @@ where
             }
             AdcClkSrc::Hsi16 => {
                 if let Some(f) = clk_ctx.hsi16() {
-                    self.adc().cfgr2.modify(|_, w| unsafe { w.ckmode().bits(0b00) });
+                    raw.cfgr2.modify(|_, w| unsafe { w.ckmode().bits(0b00) });
 
                     match f.0 / fadc_limits.1 {
                         1 => {
-                            self.adc().ccr.modify(|_, w| unsafe { w.presc().bits(0b0000) });
+                            raw.ccr.modify(|_, w| unsafe { w.presc().bits(0b0000) });
                             f.0
                         }
                         2 => {
-                            self.adc().ccr.modify(|_, w| unsafe { w.presc().bits(0b0001) });
+                            raw.ccr.modify(|_, w| unsafe { w.presc().bits(0b0001) });
                             f.0 / 2
                         }
                         4 => {
-                            self.adc().ccr.modify(|_, w| unsafe { w.presc().bits(0b0010) });
+                            raw.ccr.modify(|_, w| unsafe { w.presc().bits(0b0010) });
                             f.0 / 4
                         }
                         _ => panic!("your hsi16 is not 16"),
@@ -335,39 +315,46 @@ where
 
         if adc_clk < 3_500_000 {
             // enable the Low Frequency Mode
-            self.adc().ccr.modify(|_, w| w.lfmen().set_bit());
+            raw.ccr.modify(|_, w| w.lfmen().set_bit());
         }
 
         let adc_clk = adc_clk as f32;
 
-        let n = |n| {
-            (n / adc_clk * 1000000000.0) as u32
-        };
+        let n = |n| (n / adc_clk * 1000000000.0) as u32;
         if samp_time.subsec_nanos() < n(1.5) {
-            self.adc().smpr.modify(|_,w| unsafe { w.smpr().bits(0b000) });
+            raw.smpr.modify(|_, w| unsafe { w.smpr().bits(0b000) });
         } else if samp_time.subsec_nanos() < n(3.5) {
-            self.adc().smpr.modify(|_,w| unsafe { w.smpr().bits(0b001) });
+            raw.smpr.modify(|_, w| unsafe { w.smpr().bits(0b001) });
         } else if samp_time.subsec_nanos() < n(7.5) {
-            self.adc().smpr.modify(|_,w| unsafe { w.smpr().bits(0b010) });
+            raw.smpr.modify(|_, w| unsafe { w.smpr().bits(0b010) });
         } else if samp_time.subsec_nanos() < n(12.5) {
-            self.adc().smpr.modify(|_,w| unsafe { w.smpr().bits(0b011) });
+            raw.smpr.modify(|_, w| unsafe { w.smpr().bits(0b011) });
         } else if samp_time.subsec_nanos() < n(19.5) {
-            self.adc().smpr.modify(|_,w| unsafe { w.smpr().bits(0b100) });
+            raw.smpr.modify(|_, w| unsafe { w.smpr().bits(0b100) });
         } else if samp_time.subsec_nanos() < n(39.5) {
-            self.adc().smpr.modify(|_,w| unsafe { w.smpr().bits(0b101) });
+            raw.smpr.modify(|_, w| unsafe { w.smpr().bits(0b101) });
         } else if samp_time.subsec_nanos() < n(79.5) {
-            self.adc().smpr.modify(|_,w| unsafe { w.smpr().bits(0b110) });
+            raw.smpr.modify(|_, w| unsafe { w.smpr().bits(0b110) });
         } else if samp_time.subsec_nanos() < n(160.5) {
-            self.adc().smpr.modify(|_,w| unsafe { w.smpr().bits(0b111) });
+            raw.smpr.modify(|_, w| unsafe { w.smpr().bits(0b111) });
         } else {
             panic!("sampling time too long to settle");
         }
 
-        op(self, &pwr_ctx, &clk_ctx);
+        let mut adc = Adc {
+            adc: raw,
+            cal_fact: 0,
+            _res: PhantomData,
+            _mode: PhantomData,
+        };
+
+        adc.calibrate();
+
+        adc
     }
 
     fn start(&mut self) {
-        self.adc().cr.modify(|_,w| w.adstart().set_bit());
+        self.adc().cr.modify(|_, w| w.adstart().set_bit());
     }
 
     /// Calibrate the ADC, and store its calibration value
@@ -392,48 +379,48 @@ where
 
 /*
 
-    // Note: In Auto-off mode (AUTOFF=1) the power-on/off phases are performed automatically, by
-    // hardware and the ADRDY flag is not set.
+// Note: In Auto-off mode (AUTOFF=1) the power-on/off phases are performed automatically, by
+// hardware and the ADRDY flag is not set.
 
-    /// Enable the ADC, powering it on and readying it for use. Not necessary for single-shot mode
-    /// use.
-    fn enable(&mut self) {
-        // 1. Clear the ADRDY bit in ADC_ISR register by programming this bit to 1.
-        self.adc().isr.modify(|_, w| w.adrdy().set_bit());
-        // 2. Set ADEN=1 in the ADC_CR register.
-        self.adc().cr.modify(|_, w| w.aden().set_bit());
-        // 3. Wait until ADRDY=1 in the ADC_ISR register (ADRDY is set after the ADC startup time).
-        //    This can be handled by interrupt if the interrupt is enabled by setting the ADRDYIE
-        //    bit in the ADC_IER register.
-        while self.adc().isr.read().adrdy().bit_is_clear() {}
-    }
+/// Enable the ADC, powering it on and readying it for use. Not necessary for single-shot mode
+/// use.
+fn enable(&mut self) {
+    // 1. Clear the ADRDY bit in ADC_ISR register by programming this bit to 1.
+    self.adc().isr.modify(|_, w| w.adrdy().set_bit());
+    // 2. Set ADEN=1 in the ADC_CR register.
+    self.adc().cr.modify(|_, w| w.aden().set_bit());
+    // 3. Wait until ADRDY=1 in the ADC_ISR register (ADRDY is set after the ADC startup time).
+    //    This can be handled by interrupt if the interrupt is enabled by setting the ADRDYIE
+    //    bit in the ADC_IER register.
+    while self.adc().isr.read().adrdy().bit_is_clear() {}
+}
 
-    /// Disable the ADC. This does not turn off the internal voltage reference.
-    fn disable(&mut self) {
-        // 1. Check that ADSTART=0 in the ADC_CR register to ensure that no conversion is ongoing.
-        //    If required, stop any ongoing conversion by writing 1 to the ADSTP bit in the ADC_CR
-        //    register and waiting until this bit is read at 0.
-        self.adc().cr.modify(|_, w| w.adstp().set_bit());
-        while self.adc().cr.read().adstart().bit_is_set() {}
-        // 2. Set ADDIS=1 in the ADC_CR register.
-        self.adc().cr.modify(|_, w| w.addis().set_bit());
-        // 3. If required by the application, wait until ADEN=0 in the ADC_CR register, indicating
-        //    that the ADC is fully disabled (ADDIS is automatically reset once ADEN=0).
-        while self.adc().cr.read().aden().bit_is_set() {}
-        // 4. Clear the ADRDY bit in ADC_ISR register by programming this bit to 1 (optional).
-        self.adc().isr.modify(|_, w| w.adrdy().set_bit());
-    }
+/// Disable the ADC. This does not turn off the internal voltage reference.
+fn disable(&mut self) {
+    // 1. Check that ADSTART=0 in the ADC_CR register to ensure that no conversion is ongoing.
+    //    If required, stop any ongoing conversion by writing 1 to the ADSTP bit in the ADC_CR
+    //    register and waiting until this bit is read at 0.
+    self.adc().cr.modify(|_, w| w.adstp().set_bit());
+    while self.adc().cr.read().adstart().bit_is_set() {}
+    // 2. Set ADDIS=1 in the ADC_CR register.
+    self.adc().cr.modify(|_, w| w.addis().set_bit());
+    // 3. If required by the application, wait until ADEN=0 in the ADC_CR register, indicating
+    //    that the ADC is fully disabled (ADDIS is automatically reset once ADEN=0).
+    while self.adc().cr.read().aden().bit_is_set() {}
+    // 4. Clear the ADRDY bit in ADC_ISR register by programming this bit to 1 (optional).
+    self.adc().isr.modify(|_, w| w.adrdy().set_bit());
+}
 
-    /// Enable ADC Vreg
-    fn enable_advreg(&mut self) {
-        // write ADVREGEN 1
-        self.adc().cr.modify(|_, w| w.advregen().set_bit());
-    }
+/// Enable ADC Vreg
+fn enable_advreg(&mut self) {
+    // write ADVREGEN 1
+    self.adc().cr.modify(|_, w| w.advregen().set_bit());
+}
 
-    /// Disable ADC Vreg
-    fn disable_advreg(&mut self) {
-        self.disable();
-        // clear ADVREGEN
-        self.adc().cr.modify(|_, w| w.advregen().clear_bit());
-    }
-    */
+/// Disable ADC Vreg
+fn disable_advreg(&mut self) {
+    self.disable();
+    // clear ADVREGEN
+    self.adc().cr.modify(|_, w| w.advregen().clear_bit());
+}
+*/

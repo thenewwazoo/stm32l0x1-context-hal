@@ -1,6 +1,6 @@
 //! STM32L0x1 HAl
 #![no_std]
-#![deny(missing_docs)]
+//#![deny(missing_docs)]
 #![feature(never_type)]
 
 extern crate cortex_m;

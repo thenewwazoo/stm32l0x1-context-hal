@@ -3,28 +3,17 @@
 use stm32l0x1::{I2C1, I2C2, I2C3, RCC};
 
 use hal::blocking::i2c::{Write, WriteRead};
-use rcc::APB1;
+use rcc::{ClockContext, APB1, CCIPR};
 use time::Hertz;
 
 /// Available clock sources for I2C modules
 pub enum I2cClkSrc {
     /// APB1
-    PCLK1(Hertz),
+    PCLK1,
     /// High-speed internal 16 MHz
-    HSI16(Hertz),
+    HSI16,
     /// SYSCLK
-    Sysclk(Hertz),
-}
-
-impl I2cClkSrc {
-    /// Get the frequency of the incoming clock
-    fn freq(&self) -> Hertz {
-        match *self {
-            I2cClkSrc::PCLK1(f) => f,
-            I2cClkSrc::HSI16(f) => f,
-            I2cClkSrc::Sysclk(f) => f,
-        }
-    }
+    Sysclk,
 }
 
 /// I2C error
@@ -86,42 +75,49 @@ macro_rules! hal {
         $(
             impl<SCL, SDA> I2c<$I2CX, (SCL, SDA)> {
                 /// Configures the I2C peripheral to work in master mode
-                pub fn $i2cX<F>(
+                //pub fn $i2cX<'p, 'f, VDD: 'p, VCORE: 'p, RTC: 'p, HZ>(
+                pub fn $i2cX(
                     i2c: $I2CX,
                     pins: (SCL, SDA),
-                    freq: F,
+                    //freq: HZ,
                     clk_src: I2cClkSrc,
+                    //clk_ctx: &ClockContext<'p, 'f, VDD, VCORE, RTC>,
+                    timing_reg: u32,
                     apb1: &mut APB1,
+                    ccipr: &mut CCIPR,
                 ) -> Self where
-                    F: Into<Hertz>,
                     SCL: SclPin<$I2CX>,
                     SDA: SdaPin<$I2CX>,
+                    //HZ: Into<Hertz>,
                 {
                     apb1.enr().modify(|_, w| w.$i2cXen().set_bit());
-                    apb1.rstr().modify(|_, w| w.$i2cXrst().set_bit());
-                    apb1.rstr().modify(|_, w| w.$i2cXrst().clear_bit());
-
-                    let (i2cclk, sel0_bit, sel1_bit) = match clk_src {
-                        I2cClkSrc::PCLK1(f) => (f.0, false, false),
-                        I2cClkSrc::Sysclk(f) => (f.0, false, true),
-                        I2cClkSrc::HSI16(f) => (f.0, true, true),
-                    };
-
-                    // This is weird and bad, but the fact that the I2C has to reach back into
-                    // the RCC peripheral in order to configure its own clock is ... unfortunate.
-                    // Perhaps I could TODO expose the appropriate configuration method through
-                    // clk_ctx, but that'd require a mutable borrow and ... well.
-                    //
-                    // note for future: see hanno braun's implementation of AnalogBlock trait.
-                    // Might work well here.
-                    let ccipr = unsafe { &(*RCC::ptr()).ccipr };
-                    ccipr.modify(|_,w| w.$i2cXsel0().bit(sel0_bit).$i2cXsel1().bit(sel1_bit));
+                    while apb1.enr().read().$i2cXen().bit_is_clear() {}
 
                     i2c.cr1.write(|w| w.pe().clear_bit());
 
+                    /*
+                    let (i2cclk_f, sel0_bit, sel1_bit) = match clk_src {
+                        I2cClkSrc::PCLK1 => (clk_ctx.apb1().0, false, false),
+                        I2cClkSrc::Sysclk => (clk_ctx.sysclk().0, false, true),
+                        I2cClkSrc::HSI16 => (match clk_ctx.hsi16().as_ref() {
+                            Some(f) => f.0,
+                            None => panic!("hsi16 disabled but selected for i2c"),
+                        }, true, true),
+                    };
+                    */
+
+                    let (sel1_bit, sel0_bit) = match clk_src {
+                        I2cClkSrc::PCLK1 => (false, false),
+                        I2cClkSrc::Sysclk => (false, true),
+                        I2cClkSrc::HSI16 => (true, false),
+                    };
+
+                    ccipr.inner().modify(|_,w| w.$i2cXsel0().bit(sel0_bit).$i2cXsel1().bit(sel1_bit));
+
+                    /*
                     let freq = freq.into().0;
 
-                    assert!(freq <= 100_000);
+                    //assert!(freq <= 100_000);
 
                     // TODO review compliance with the timing requirements of I2C
                     // t_I2CCLK = 1 / PCLK1
@@ -131,8 +127,8 @@ macro_rules! hal {
                     //
                     // t_SYNC1 + t_SYNC2 > 4 * t_I2CCLK
                     // t_SCL ~= t_SYNC1 + t_SYNC2 + t_SCLL + t_SCLH
-                    let ratio = i2cclk / freq - 4;
-                    let (presc, scll, sclh, sdadel, scldel) = if freq >= 100_000 {
+                    let ratio = i2cclk_f / freq - 4;
+                    let (presc, scll, sclh, sdadel, scldel) = if freq > 100_000 {
                         // fast-mode or fast-mode plus
                         // here we pick SCLL + 1 = 2 * (SCLH + 1)
                         let presc = ratio / 387;
@@ -143,13 +139,13 @@ macro_rules! hal {
                         let (sdadel, scldel) = if freq > 400_000 {
                             // fast-mode plus
                             let sdadel = 0;
-                            let scldel = i2cclk / 4_000_000 / (presc + 1) - 1;
+                            let scldel = i2cclk_f / 4_000_000 / (presc + 1) - 1;
 
                             (sdadel, scldel)
                         } else {
                             // fast-mode
-                            let sdadel = i2cclk / 8_000_000 / (presc + 1);
-                            let scldel = i2cclk / 2_000_000 / (presc + 1) - 1;
+                            let sdadel = i2cclk_f / 8_000_000 / (presc + 1);
+                            let scldel = i2cclk_f / 2_000_000 / (presc + 1) - 1;
 
                             (sdadel, scldel)
                         };
@@ -163,8 +159,8 @@ macro_rules! hal {
                         let sclh = ((ratio / (presc + 1)) - 2) / 2;
                         let scll = sclh;
 
-                        let sdadel = i2cclk / 2_000_000 / (presc + 1);
-                        let scldel = i2cclk / 800_000 / (presc + 1) - 1;
+                        let sdadel = i2cclk_f / 2_000_000 / (presc + 1);
+                        let scldel = i2cclk_f / 800_000 / (presc + 1) - 1;
 
                         (presc, scll, sclh, sdadel, scldel)
                     };
@@ -191,6 +187,12 @@ macro_rules! hal {
                             .scldel()
                             .bits(scldel)
                     });
+                */
+
+                    i2c.timingr.write(|w| unsafe { w.bits(timing_reg) });
+
+                    i2c.cr2.modify(|_,w| w./*autoend().set_bit().*/nack().set_bit());
+                    i2c.cr1.modify(|_,w| w.anfoff().clear_bit());
 
                     // Enable the peripheral
                     i2c.cr1.write(|w| w.pe().set_bit());
