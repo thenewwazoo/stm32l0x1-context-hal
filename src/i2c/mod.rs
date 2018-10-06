@@ -1,10 +1,9 @@
 //! Inter-Integrated Circuit (I2C) bus
 
-use stm32l0x1::{I2C1, I2C2, I2C3, RCC};
+use stm32l0x1::I2C1;
 
 use hal::blocking::i2c::{Write, WriteRead};
-use rcc::{ClockContext, APB1, CCIPR};
-use time::Hertz;
+use rcc::{APB1, CCIPR};
 
 /// Available clock sources for I2C modules
 pub enum I2cClkSrc {

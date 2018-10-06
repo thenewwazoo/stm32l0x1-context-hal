@@ -9,7 +9,7 @@ use hal::analog::{AdcChannel, SingleMode};
 use nb;
 use power::{self, VCoreRange};
 use rcc::{self, ClockContext};
-use stm32l0x1::{adc, ADC, RCC};
+use stm32l0x1::{adc, ADC};
 
 /// ADC related errors
 #[derive(Debug)]

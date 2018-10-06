@@ -6,7 +6,7 @@ use core::ptr;
 use hal::prelude::*;
 use hal::serial;
 use nb;
-use stm32l0x1::{LPUART1, RCC, USART2};
+use stm32l0x1::{LPUART1, USART2};
 
 use rcc::clocking::USARTClkSource;
 use rcc::ClockContext;
