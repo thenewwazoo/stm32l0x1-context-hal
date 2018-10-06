@@ -264,24 +264,24 @@ impl LowSpeedExternalOSC {
     }
 
     /// Enable the LSE, and wait for it to become ready
-    pub(crate) fn configure(
+    pub(crate) fn configure<VDD, VCORE, RTC>(
         &self,
-        apb1: &mut rcc::APB1,
-        cr: &mut rcc::CR,
         csr: &mut rcc::CSR,
-        pwr_ctx: &mut power::PowerContext,
-    ) -> Option<Hertz> {
-        if self.enable {
-            pwr_ctx.rtc_domain(apb1, cr, || {
+        pwr: &mut power::Power<VDD, VCORE, RTC>,
+    ) -> Option<Hertz>
+    where
+        VCORE: power::Vos,
+    {
+        pwr.dbp_context(|| {
+            if self.enable {
                 csr.inner().modify(|_, w| w.lseon().set_bit());
                 while csr.inner().read().lseon().bit_is_clear() {}
-            });
-        } else {
-            pwr_ctx.rtc_domain(apb1, cr, || {
+            } else {
                 csr.inner().modify(|_, w| w.lseon().clear_bit());
                 while csr.inner().read().lseon().bit_is_set() {}
-            });
-        }
+            }
+        });
+
         self.freq()
     }
 }

@@ -6,11 +6,11 @@ use core::ptr;
 use hal::prelude::*;
 use hal::serial;
 use nb;
-use stm32l0x1::{LPUART1, RCC, USART2};
+use stm32l0x1::{LPUART1, USART2};
 
 use rcc::clocking::USARTClkSource;
 use rcc::ClockContext;
-use rcc::APB1;
+use rcc::{APB1, CCIPR};
 use time::Bps;
 
 #[cfg(any(feature = "STM32L011x3", feature = "STM32L011x4"))]
@@ -65,8 +65,10 @@ pub unsafe trait TxPin<USART> {}
 pub unsafe trait RxPin<USART> {}
 
 /// Serial abstraction
-pub struct Serial<USART> {
+pub struct Serial<USART, PINS> {
     usart: USART,
+    #[allow(dead_code)]
+    pins: PINS,
 }
 
 /// Serial receiver
@@ -91,36 +93,24 @@ macro_rules! hal {
     )+) => {
         $(
 
-            impl Serial<$USARTX> {
+            impl<TX, RX> Serial<$USARTX, (TX, RX)> {
 
                 /// Create a $USARTX peripheral to provide 8N1 asynchronous serial communication
                 /// with an oversampling rate of 16.
-                pub fn $usartX(
+                pub fn $usartX<'pwr, 'flash, VDD, VCORE, RTC>(
                     usart: $USARTX,
+                    pins: (TX, RX),
+                    baud_rate: Bps,
+                    clk_src: USARTClkSource,
+                    clk_ctx: &ClockContext<'pwr, 'flash, VDD, VCORE, RTC>,
                     apb: &mut $APB,
+                    ccipr: &mut CCIPR,
                 ) -> Self
+                where TX: TxPin<$USARTX>,
+                      RX: RxPin<$USARTX>,
                 {
                     apb.enr().modify(|_, w| w.$usartXen().set_bit());
                     while apb.enr().read().$usartXen().bit_is_clear() {}
-                    Serial { usart }
-                }
-
-                #[allow(unused_variables)]
-                /// Operate within the serial port's configuration domain
-                ///
-                /// If you're using some kind of `static mut` to own the `Rx`, you'll want to make
-                /// sure that you invalidate it before the end of the domain context.
-                pub fn serial_domain<TX, RX, F>(&mut self,
-                                                pins: (&mut TX, &mut RX),
-                                                baud_rate: Bps,
-                                                clk_src: USARTClkSource,
-                                                clk_ctx: &ClockContext,
-                                                mut op: F
-                )
-                where TX: TxPin<$USARTX>,
-                      RX: RxPin<$USARTX>,
-                      F: FnMut(Tx<$USARTX>, Rx<$USARTX>),
-                {
 
                     let (clk_f, sel_bit1, sel_bit0) = match clk_src {
                         USARTClkSource::PCLK   => (clk_ctx.$pclk().0,   false, false),
@@ -129,13 +119,13 @@ macro_rules! hal {
                         USARTClkSource::LSE    => (clk_ctx.lse().expect("LSE not enabled").0,   true, true),
                     };
 
-                    self.usart.cr1.modify(|_,w| w.ue().clear_bit()); // disable the uart
+                    usart.cr1.modify(|_,w| w.ue().clear_bit()); // disable the uart
 
                     // From 24.5.2 "Character Transmission Procedure" and 24.5.3 "Character
                     // Reception Procedure"
 
                     // 1. Program the M bits in USART_CR1 to define the word length.
-                    self.usart.cr1.modify(|_,w| w
+                    usart.cr1.modify(|_,w| w
                                      .m1().clear_bit()
                                      .m0().clear_bit());    // 8-bit word length
 
@@ -144,22 +134,17 @@ macro_rules! hal {
                     if brr < 16 {
                         panic!("impossible BRR");
                     }
-                    self.usart.brr.write(|w| unsafe { w.bits(brr) });
+                    usart.brr.write(|w| unsafe { w.bits(brr) });
 
                     // 3. Program the number of stop bits in USART_CR2.
-                    self.usart.cr2.modify(|_,w| unsafe { w.stop().bits(0b00) });          // 1 stop bit
+                    usart.cr2.modify(|_,w| unsafe { w.stop().bits(0b00) });          // 1 stop bit
 
                     // No CR3 configuration required
 
-                    // This is weird and bad, but the fact that the USART has to reach back into
-                    // the RCC peripheral in order to configure its own clock is ... unfortunate.
-                    // Perhaps I could TODO expose the appropriate configuration method through
-                    // clk_ctx, but that'd require a mutable borrow and ... well.
-                    let ccipr = unsafe { &(*RCC::ptr()).ccipr };
-                    ccipr.modify(|_,w| w.$usartXsel0().bit(sel_bit0).$usartXsel1().bit(sel_bit1));
+                    ccipr.inner().modify(|_,w| w.$usartXsel0().bit(sel_bit0).$usartXsel1().bit(sel_bit1));
 
                     // 4. Enable the USART by writing the UE bit in USART_CR1 register to 1.
-                    self.usart.cr1.modify(|_,w| w.ue().set_bit()); // __HAL_UART_ENABLE in HAL_UART_Init
+                    usart.cr1.modify(|_,w| w.ue().set_bit()); // __HAL_UART_ENABLE in HAL_UART_Init
 
                     // 5. Select DMA enable (DMAR) in USART_CR3 if multibuffer communication is to
                     //    take place. Configure the DMA register as explained in multibuffer
@@ -170,51 +155,33 @@ macro_rules! hal {
                     // 6. Set the TE bit in USART_CR1 to send an idle frame as first transmission.
                     // For RX:
                     // 6. Set the RE bit USART_CR1. This enables the receiver which begins searching for a start bit.
-                    self.usart.cr1.modify(|_,w| w
+                    usart.cr1.modify(|_,w| w
                                      .pce().clear_bit()   // parity control disabled
                                      .te().set_bit()      // enable tx
                                      .re().set_bit()      // enable rx
                                      .over8().clear_bit() // 16x oversampling - default
                                     );
 
-                    while self.usart.isr.read().teack().bit_is_clear() {} // UART_CheckIdleState in HAL_UART_Init
-                    while self.usart.isr.read().reack().bit_is_clear() {}
+                    while usart.isr.read().teack().bit_is_clear() {} // UART_CheckIdleState in HAL_UART_Init
+                    while usart.isr.read().reack().bit_is_clear() {}
 
-                    self.usart.cr3.modify(|_,w| w.rtse().clear_bit().ctse().clear_bit()); // no hardware flow control
+                    usart.cr3.modify(|_,w| w.rtse().clear_bit().ctse().clear_bit()); // no hardware flow control
 
                     // In asynchronous mode, the following bits must be kept cleared:
                     // - LINEN and CLKEN bits in the USART_CR2 register,
                     // - SCEN, HDSEL and IREN  bits in the USART_CR3 register.
                     //  (defaults acceptable)
-                    self.usart.cr2.modify(|_,w| w
+                    usart.cr2.modify(|_,w| w
                                      .linen().clear_bit()
                                      .clken().clear_bit()
                                      );
-                    self.usart.cr3.modify(|_,w| w
+                    usart.cr3.modify(|_,w| w
                                      .scen().clear_bit()
                                      .hdsel().clear_bit()
                                      .iren().clear_bit()
                                      );
 
-
-                    op(
-                        Tx {
-                            _usart: PhantomData,
-                        },
-                        Rx {
-                            _usart: PhantomData,
-                        }
-                      );
-
-                    self.usart.cr1.modify(|_,w| w.ue().clear_bit()); // disable the uart
-
-                    // Clear interrupt flags so that future listen() calls are idempotent
-                    self.unlisten(Event::Rxne);
-                    self.unlisten(Event::Txe);
-                    self.unlisten(Event::Idle);
-                    self.unlisten(Event::Tc);
-                    self.unlisten(Event::Peie);
-                    self.unlisten(Event::Eie);
+                    Serial { usart, pins }
 
                 }
 
@@ -242,6 +209,16 @@ macro_rules! hal {
                     }
                 }
 
+                pub fn split(self) -> (Tx<$USARTX>, Rx<$USARTX>) {
+                    (
+                        Tx {
+                            _usart: PhantomData,
+                        },
+                        Rx {
+                            _usart: PhantomData,
+                        },
+                    )
+                }
             }
 
             impl serial::Read<u8> for Rx<$USARTX> {
@@ -318,32 +295,25 @@ hal! {
     USART2: (usart2, APB1, apb1, usart2en, usart2sel0, usart2sel1),
 }
 
-impl Serial<LPUART1> {
+impl<TX, RX> Serial<LPUART1, (TX, RX)> {
     /// Create a LPUART1 peripheral to provide 8N1 asynchronous serial communication
     /// with an oversampling rate of 16.
-    pub fn lpuart1(usart: LPUART1, apb: &mut APB1) -> Self {
-        apb.enr().modify(|_, w| w.lpuart1en().set_bit());
-        while apb.enr().read().lpuart1en().bit_is_clear() {}
-        Serial { usart }
-    }
-
-    #[allow(unused_variables)]
-    /// Operate within the serial port's configuration domain
-    ///
-    /// If you're using some kind of `static mut` to own the `Rx`, you'll want to make
-    /// sure that you invalidate it before the end of the domain context.
-    pub fn serial_domain<TX, RX, F>(
-        &mut self,
-        pins: (&mut TX, &mut RX),
+    pub fn lpuart1<'pwr, 'flash, F, VDD, VCORE, RTC>(
+        usart: LPUART1,
+        pins: (TX, RX),
         baud_rate: Bps,
         clk_src: USARTClkSource,
-        clk_ctx: &ClockContext,
-        mut op: F,
-    ) where
+        clk_ctx: &ClockContext<'pwr, 'flash, VDD, VCORE, RTC>,
+        apb: &mut APB1,
+        ccipr: &mut CCIPR,
+    ) -> Self
+    where
         TX: TxPin<LPUART1>,
         RX: RxPin<LPUART1>,
-        F: FnMut(Tx<LPUART1>, Rx<LPUART1>),
     {
+        apb.enr().modify(|_, w| w.lpuart1en().set_bit());
+        while apb.enr().read().lpuart1en().bit_is_clear() {}
+
         let (clk_f, sel_bit1, sel_bit0) = match clk_src {
             USARTClkSource::PCLK => (clk_ctx.apb1().0, false, false),
             USARTClkSource::SYSCLK => (clk_ctx.sysclk().0, false, true),
@@ -355,15 +325,13 @@ impl Serial<LPUART1> {
             USARTClkSource::LSE => (clk_ctx.lse().expect("LSE not enabled").0, true, true),
         };
 
-        self.usart.cr1.modify(|_, w| w.ue().clear_bit()); // disable the uart
+        usart.cr1.modify(|_, w| w.ue().clear_bit()); // disable the uart
 
         // From 25.4.2 "Character Transmission Procedure" and 25.4.3 "Character
         // Reception Procedure"
 
         // 1. Program the M bits in LPUART_CR1 to define the word length.
-        self.usart
-            .cr1
-            .modify(|_, w| w.m1().clear_bit().m0().clear_bit()); // 8-bit word length
+        usart.cr1.modify(|_, w| w.m1().clear_bit().m0().clear_bit()); // 8-bit word length
 
         // 2. Select the desired baud rate using the baud rate register LPUART_BRR
 
@@ -379,22 +347,19 @@ impl Serial<LPUART1> {
             // in the LPUART_BRR register."
             panic!("bad BRR");
         }
-        self.usart.brr.write(|w| unsafe { w.bits(brr) });
+        usart.brr.write(|w| unsafe { w.bits(brr) });
 
         // 3. Program the number of stop bits in LPUART_CR2.
-        self.usart.cr2.modify(|_, w| unsafe { w.stop().bits(0b00) }); // 1 stop bit
+        usart.cr2.modify(|_, w| unsafe { w.stop().bits(0b00) }); // 1 stop bit
 
         // No CR3 configuration required
 
-        // This is weird and bad, but the fact that the LPUART has to reach back into
-        // the RCC peripheral in order to configure its own clock is ... unfortunate.
-        // Perhaps I could TODO expose the appropriate configuration method through
-        // clk_ctx, but that'd require a mutable borrow and ... well.
-        let ccipr = unsafe { &(*RCC::ptr()).ccipr };
-        ccipr.modify(|_, w| w.lpuart1sel0().bit(sel_bit0).lpuart1sel1().bit(sel_bit1));
+        ccipr
+            .inner()
+            .modify(|_, w| w.lpuart1sel0().bit(sel_bit0).lpuart1sel1().bit(sel_bit1));
 
         // 4. Enable the LPUART by writing the UE bit in LPUART_CR1 register to 1.
-        self.usart.cr1.modify(|_, w| w.ue().set_bit()); // __HAL_UART_ENABLE in HAL_UART_Init
+        usart.cr1.modify(|_, w| w.ue().set_bit()); // __HAL_UART_ENABLE in HAL_UART_Init
 
         // 5. Select DMA enable (DMAR) in LPUART_CR3 if multibuffer communication is to
         //    take place. Configure the DMA register as explained in multibuffer
@@ -405,42 +370,27 @@ impl Serial<LPUART1> {
         // 6. Set the TE bit in LPUART_CR1 to send an idle frame as first transmission.
         // For RX:
         // 6. Set the RE bit LPUART_CR1. This enables the receiver which begins searching for a start bit.
-        self.usart.cr1.modify(
+        usart.cr1.modify(
             |_, w| {
-                w
-                                        .pce().clear_bit()   // parity control disabled
-                                        .te().set_bit()      // enable tx
-                                        .re().set_bit()
+                w.pce()
+                    .clear_bit() // parity control disabled
+                    .te()
+                    .set_bit() // enable tx
+                    .re()
+                    .set_bit()
             }, // enable rx
         );
 
-        while self.usart.isr.read().teack().bit_is_clear() {} // UART_CheckIdleState in HAL_UART_Init
-        while self.usart.isr.read().reack().bit_is_clear() {}
+        while usart.isr.read().teack().bit_is_clear() {} // UART_CheckIdleState in HAL_UART_Init
+        while usart.isr.read().reack().bit_is_clear() {}
 
-        self.usart
+        usart
             .cr3
             .modify(|_, w| w.rtse().clear_bit().ctse().clear_bit()); // no hardware flow control
 
-        self.usart.cr3.modify(|_, w| w.hdsel().clear_bit());
+        usart.cr3.modify(|_, w| w.hdsel().clear_bit());
 
-        op(
-            Tx {
-                _usart: PhantomData,
-            },
-            Rx {
-                _usart: PhantomData,
-            },
-        );
-
-        self.usart.cr1.modify(|_, w| w.ue().clear_bit()); // disable the uart
-
-        // Clear interrupt flags so that future listen() calls are idempotent
-        self.unlisten(Event::Rxne);
-        self.unlisten(Event::Txe);
-        self.unlisten(Event::Idle);
-        self.unlisten(Event::Tc);
-        self.unlisten(Event::Peie);
-        self.unlisten(Event::Eie);
+        Serial { usart, pins }
     }
 
     /// Starts listening for an interrupt event
@@ -465,6 +415,17 @@ impl Serial<LPUART1> {
             Event::Peie => self.usart.cr1.modify(|_, w| w.peie().clear_bit()),
             Event::Eie => self.usart.cr3.modify(|_, w| w.eie().clear_bit()),
         }
+    }
+
+    pub fn split(self) -> (Tx<LPUART1>, Rx<LPUART1>) {
+        (
+            Tx {
+                _usart: PhantomData,
+            },
+            Rx {
+                _usart: PhantomData,
+            },
+        )
     }
 }
 

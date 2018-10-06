@@ -1,15 +1,9 @@
 //! Flash memory
 
 use common::Constrain;
-use power::VCoreRange;
+use power::{self, Power};
 use stm32l0x1::{flash, FLASH};
 use time::Hertz;
-
-/// Onboard flash memory abstraction
-pub struct Flash {
-    /// FLASH_ACR register
-    pub acr: ACR,
-}
 
 impl Constrain<Flash> for FLASH {
     fn constrain(self) -> Flash {
@@ -17,37 +11,70 @@ impl Constrain<Flash> for FLASH {
     }
 }
 
-impl Flash {
-    /// Provide an operating context wherein the flash latency will not change.
-    ///
-    /// Because flash latency depends on core system clock, we want to make sure it does not
-    /// change. This method provides an operating context for that.
-    pub fn latency_domain<F>(&mut self, sysclk: Hertz, vcore: VCoreRange, mut op: F)
-    where
-        F: FnMut(),
-    {
-        // Taken from fig. 11 "Performance versus Vdd and Vcore range"
-        match vcore {
-            VCoreRange::Range3 => {
-                self.acr.flash_latency_0();
-            }
-            VCoreRange::Range2 => {
-                if sysclk.0 > 8_000_000 {
-                    self.acr.flash_latency_1();
-                } else {
-                    self.acr.flash_latency_0();
-                }
-            }
-            VCoreRange::Range1 => {
-                if sysclk.0 > 16_000_000 {
-                    self.acr.flash_latency_1();
-                } else {
-                    self.acr.flash_latency_0();
-                }
-            }
-        };
+pub struct Flash {
+    acr: ACR,
+}
 
-        op();
+impl Flash {
+    pub fn set_latency<VDD, VCORE, RTC>(&mut self, sysclk: Hertz, _pwr: &Power<VDD, VCORE, RTC>)
+    where
+        VCORE: Latency,
+    {
+        VCORE::latency(sysclk).set(&mut self.acr);
+    }
+
+    pub fn get_latency(&mut self) -> FlashLatency {
+        match self.acr.acr().read().latency().bit() {
+            true => FlashLatency::_1_Clk,
+            false => FlashLatency::_0_Clk,
+        }
+    }
+}
+
+/// Couples the necessary flash latency to the VCore power range of the cpu
+pub trait Latency {
+    /// Taken from fig. 11 "Performance versus Vdd and Vcore range"
+    fn latency(f: Hertz) -> FlashLatency;
+}
+
+impl Latency for power::VCoreRange1 {
+    fn latency(f: Hertz) -> FlashLatency {
+        if f.0 > 16_000_000 {
+            FlashLatency::_1_Clk
+        } else {
+            FlashLatency::_0_Clk
+        }
+    }
+}
+
+impl Latency for power::VCoreRange2 {
+    fn latency(f: Hertz) -> FlashLatency {
+        if f.0 > 8_000_000 {
+            FlashLatency::_1_Clk
+        } else {
+            FlashLatency::_0_Clk
+        }
+    }
+}
+
+impl Latency for power::VCoreRange3 {
+    fn latency(_: Hertz) -> FlashLatency {
+        FlashLatency::_0_Clk
+    }
+}
+
+#[allow(non_camel_case_types)]
+pub enum FlashLatency {
+    _1_Clk,
+    _0_Clk,
+}
+
+impl FlashLatency {
+    pub fn set(&self, acr: &mut ACR) {
+        match self {
+            FlashLatency::_1_Clk => acr.flash_latency_1(),
+            FlashLatency::_0_Clk => acr.flash_latency_0(),
+        };
     }
 }
 
@@ -62,14 +89,16 @@ impl ACR {
     }
 
     /// Set the flash latency to 1 clock cycle
-    pub(crate) fn flash_latency_1(&mut self) {
+    pub(crate) fn flash_latency_1(&mut self) -> FlashLatency {
         self.acr().modify(|_, w| w.latency().set_bit());
         while self.acr().read().latency().bit_is_clear() {}
+        FlashLatency::_1_Clk
     }
 
     /// Set the flash latency to 0 clock cycles
-    pub(crate) fn flash_latency_0(&mut self) {
+    pub(crate) fn flash_latency_0(&mut self) -> FlashLatency {
         self.acr().modify(|_, w| w.latency().clear_bit());
         while self.acr().read().latency().bit_is_set() {}
+        FlashLatency::_0_Clk
     }
 }

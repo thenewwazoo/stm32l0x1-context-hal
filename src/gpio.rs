@@ -14,6 +14,24 @@ use rcc;
 
 use stm32l0x1;
 
+/// Analog mode trait
+/// Implemented only for corresponding structs.
+///
+/// Note: MUST not be implemented by user.
+pub trait AnalogMode {
+    /// Used to set pin to floating
+    fn modify_pupdr_bits(original: u32, offset: u32) -> u32;
+}
+
+/// Analog mode (type state)
+pub struct Analog(());
+impl AnalogMode for Analog {
+    #[inline]
+    fn modify_pupdr_bits(original: u32, offset: u32) -> u32 {
+        original & !(0b11 << offset)
+    }
+}
+
 /// Input Mode Trait
 /// Implemented only for corresponding structs.
 ///
@@ -170,17 +188,17 @@ macro_rules! impl_gpio {
             pub ospeedr: OSPEEDR<$GPIOX>,
             $(
                 /// Pin
-                pub $PXiL: $PXiL<Input<Floating>>,
+                pub $PXiL: $PXiL<Analog>,
             )*
             $(
                 /// Pin
-                pub $PXiH: $PXiH<Input<Floating>>,
+                pub $PXiH: $PXiH<Analog>,
             )*
         }
 
         impl $name {
             /// Create a new GPIO module object
-            pub fn new(iop: &mut rcc::IOP) -> Self {
+            pub fn new(_gpio: $GPIOX, iop: &mut rcc::IOP) -> Self {
                 iop.enr().modify(|_,w| w.$gpioen().set_bit());
                 while iop.enr().read().$gpioen().bit_is_clear() {}
                 Self {
@@ -210,10 +228,34 @@ macro_rules! impl_pin {
         impl<MODE> $PXi<MODE> {
             const OFFSET: u32 = 2 * $i;
 
+            /// Configures the PIN to operate as a high-impedance analog input
+            pub fn into_analog(
+                self,
+                moder: &mut MODER<$GPIOX>,
+                pupdr: &mut PUPDR<$GPIOX>,
+            ) -> $PXi<Analog> {
+                pupdr.pupdr().modify(|r, w| unsafe {
+                    w.bits(Analog::modify_pupdr_bits(r.bits(), Self::OFFSET))
+                });
+                moder
+                    .moder()
+                    .modify(|r, w| unsafe { w.bits(r.bits() | (0b11 << Self::OFFSET)) });
+
+                $PXi(PhantomData)
+            }
+
             /// Configures the PIN to operate as Input Pin according to Mode.
-            pub fn into_input<Mode: InputMode>(self, moder: &mut MODER<$GPIOX>, pupdr: &mut PUPDR<$GPIOX>) -> $PXi<Input<Mode>> {
-                moder.moder().modify(|r, w| unsafe { w.bits(r.bits() & !(0b11 << Self::OFFSET)) });
-                pupdr.pupdr().modify(|r, w| unsafe { w.bits(Mode::modify_pupdr_bits(r.bits(), Self::OFFSET)) });
+            pub fn into_input<Mode: InputMode>(
+                self,
+                moder: &mut MODER<$GPIOX>,
+                pupdr: &mut PUPDR<$GPIOX>,
+            ) -> $PXi<Input<Mode>> {
+                moder
+                    .moder()
+                    .modify(|r, w| unsafe { w.bits(r.bits() & !(0b11 << Self::OFFSET)) });
+                pupdr.pupdr().modify(|r, w| unsafe {
+                    w.bits(Mode::modify_pupdr_bits(r.bits(), Self::OFFSET))
+                });
 
                 $PXi(PhantomData)
             }
@@ -221,30 +263,45 @@ macro_rules! impl_pin {
             /// Set pin drive strength
             #[inline]
             pub fn set_pin_speed(&self, spd: PinSpeed, ospeedr: &mut OSPEEDR<$GPIOX>) {
-                ospeedr
-                    .ospeedr()
-                    .modify(|r, w| unsafe { w.bits((r.bits() & !(0b11 << Self::OFFSET)) | ((spd as u32) << Self::OFFSET)) });
+                ospeedr.ospeedr().modify(|r, w| unsafe {
+                    w.bits((r.bits() & !(0b11 << Self::OFFSET)) | ((spd as u32) << Self::OFFSET))
+                });
             }
 
             /// Configures the PIN to operate as Output Pin according to Mode.
-            pub fn into_output<OMode: OutputMode, PUMode: InputMode>(self, moder: &mut MODER<$GPIOX>, otyper: &mut OTYPER<$GPIOX>, pupdr: &mut PUPDR<$GPIOX>) -> $PXi<Output<OMode, PUMode>> {
-                moder
-                    .moder()
-                    .modify(|r, w| unsafe { w.bits((r.bits() & !(0b11 << Self::OFFSET)) | (0b01 << Self::OFFSET)) });
-                pupdr.pupdr().modify(|r, w| unsafe { w.bits(PUMode::modify_pupdr_bits(r.bits(), Self::OFFSET)) });
-                otyper.otyper().modify(|r, w| unsafe { w.bits(OMode::modify_otyper_bits(r.bits(), $i)) });
+            pub fn into_output<OMode: OutputMode, PUMode: InputMode>(
+                self,
+                moder: &mut MODER<$GPIOX>,
+                otyper: &mut OTYPER<$GPIOX>,
+                pupdr: &mut PUPDR<$GPIOX>,
+            ) -> $PXi<Output<OMode, PUMode>> {
+                moder.moder().modify(|r, w| unsafe {
+                    w.bits((r.bits() & !(0b11 << Self::OFFSET)) | (0b01 << Self::OFFSET))
+                });
+                pupdr.pupdr().modify(|r, w| unsafe {
+                    w.bits(PUMode::modify_pupdr_bits(r.bits(), Self::OFFSET))
+                });
+                otyper
+                    .otyper()
+                    .modify(|r, w| unsafe { w.bits(OMode::modify_otyper_bits(r.bits(), $i)) });
 
                 $PXi(PhantomData)
             }
 
             /// Configures the PIN to operate as Alternate Function.
-            pub fn into_alt_fun<AF: AltFun>(self, moder: &mut MODER<$GPIOX>, afr: &mut $AFR<$GPIOX>) -> $PXi<AF> {
+            pub fn into_alt_fun<AF: AltFun>(
+                self,
+                moder: &mut MODER<$GPIOX>,
+                afr: &mut $AFR<$GPIOX>,
+            ) -> $PXi<AF> {
                 // AFRx pin fields are 4 bits wide, and each 8-pin bank has its own reg (L or H); e.g. pin 8's offset is _0_, within AFRH.
                 const AFR_OFFSET: usize = ($i % 8) * 4;
-                moder
-                    .moder()
-                    .modify(|r, w| unsafe { w.bits((r.bits() & !(0b11 << Self::OFFSET)) | (0b10 << Self::OFFSET)) });
-                afr.afr().modify(|r, w| unsafe { w.bits((r.bits() & !(0b1111 << AFR_OFFSET)) | (AF::NUM << AFR_OFFSET)) });
+                moder.moder().modify(|r, w| unsafe {
+                    w.bits((r.bits() & !(0b11 << Self::OFFSET)) | (0b10 << Self::OFFSET))
+                });
+                afr.afr().modify(|r, w| unsafe {
+                    w.bits((r.bits() & !(0b1111 << AFR_OFFSET)) | (AF::NUM << AFR_OFFSET))
+                });
 
                 $PXi(PhantomData)
             }
