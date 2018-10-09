@@ -174,18 +174,6 @@ macro_rules! impl_gpio {
         #[allow(non_snake_case)]
         ///GPIO
         pub struct $name {
-            /// Opaque AFRH register
-            pub afrh: AFRH<$GPIOX>,
-            /// Opaque AFRL register
-            pub afrl: AFRL<$GPIOX>,
-            /// Opaque MODER register
-            pub moder: MODER<$GPIOX>,
-            /// Opaque OTYPER register
-            pub otyper: OTYPER<$GPIOX>,
-            /// Opaque PUPDR register
-            pub pupdr: PUPDR<$GPIOX>,
-            /// Opaque OSPEEDR register
-            pub ospeedr: OSPEEDR<$GPIOX>,
             $(
                 /// Pin
                 pub $PXiL: $PXiL<Analog>,
@@ -202,12 +190,6 @@ macro_rules! impl_gpio {
                 iop.enr().modify(|_,w| w.$gpioen().set_bit());
                 while iop.enr().read().$gpioen().bit_is_clear() {}
                 Self {
-                    afrh: AFRH(PhantomData),
-                    afrl: AFRL(PhantomData),
-                    moder: MODER(PhantomData),
-                    otyper: OTYPER(PhantomData),
-                    pupdr: PUPDR(PhantomData),
-                    ospeedr: OSPEEDR(PhantomData),
                     $(
                         $PXiL: $PXiL(PhantomData),
                     )*
@@ -229,11 +211,9 @@ macro_rules! impl_pin {
             const OFFSET: u32 = 2 * $i;
 
             /// Configures the PIN to operate as a high-impedance analog input
-            pub fn into_analog(
-                self,
-                moder: &mut MODER<$GPIOX>,
-                pupdr: &mut PUPDR<$GPIOX>,
-            ) -> $PXi<Analog> {
+            pub fn into_analog(self) -> $PXi<Analog> {
+                let mut moder: MODER<$GPIOX> = MODER(PhantomData);
+                let mut pupdr: PUPDR<$GPIOX> = PUPDR(PhantomData);
                 pupdr.pupdr().modify(|r, w| unsafe {
                     w.bits(Analog::modify_pupdr_bits(r.bits(), Self::OFFSET))
                 });
@@ -245,11 +225,10 @@ macro_rules! impl_pin {
             }
 
             /// Configures the PIN to operate as Input Pin according to Mode.
-            pub fn into_input<Mode: InputMode>(
-                self,
-                moder: &mut MODER<$GPIOX>,
-                pupdr: &mut PUPDR<$GPIOX>,
-            ) -> $PXi<Input<Mode>> {
+            pub fn into_input<Mode: InputMode>(self) -> $PXi<Input<Mode>> {
+                let mut moder: MODER<$GPIOX> = MODER(PhantomData);
+                let mut pupdr: PUPDR<$GPIOX> = PUPDR(PhantomData);
+
                 moder
                     .moder()
                     .modify(|r, w| unsafe { w.bits(r.bits() & !(0b11 << Self::OFFSET)) });
@@ -262,7 +241,9 @@ macro_rules! impl_pin {
 
             /// Set pin drive strength
             #[inline]
-            pub fn set_pin_speed(&self, spd: PinSpeed, ospeedr: &mut OSPEEDR<$GPIOX>) {
+            pub fn set_pin_speed(&self, spd: PinSpeed) {
+                let mut ospeedr: OSPEEDR<$GPIOX> = OSPEEDR(PhantomData);
+
                 ospeedr.ospeedr().modify(|r, w| unsafe {
                     w.bits((r.bits() & !(0b11 << Self::OFFSET)) | ((spd as u32) << Self::OFFSET))
                 });
@@ -271,10 +252,11 @@ macro_rules! impl_pin {
             /// Configures the PIN to operate as Output Pin according to Mode.
             pub fn into_output<OMode: OutputMode, PUMode: InputMode>(
                 self,
-                moder: &mut MODER<$GPIOX>,
-                otyper: &mut OTYPER<$GPIOX>,
-                pupdr: &mut PUPDR<$GPIOX>,
             ) -> $PXi<Output<OMode, PUMode>> {
+                let mut moder: MODER<$GPIOX> = MODER(PhantomData);
+                let mut otyper: OTYPER<$GPIOX> = OTYPER(PhantomData);
+                let mut pupdr: PUPDR<$GPIOX> = PUPDR(PhantomData);
+
                 moder.moder().modify(|r, w| unsafe {
                     w.bits((r.bits() & !(0b11 << Self::OFFSET)) | (0b01 << Self::OFFSET))
                 });
@@ -289,11 +271,10 @@ macro_rules! impl_pin {
             }
 
             /// Configures the PIN to operate as Alternate Function.
-            pub fn into_alt_fun<AF: AltFun>(
-                self,
-                moder: &mut MODER<$GPIOX>,
-                afr: &mut $AFR<$GPIOX>,
-            ) -> $PXi<AF> {
+            pub fn into_alt_fun<AF: AltFun>(self) -> $PXi<AF> {
+                let mut moder: MODER<$GPIOX> = MODER(PhantomData);
+                let mut afr: $AFR<$GPIOX> = $AFR(PhantomData);
+
                 // AFRx pin fields are 4 bits wide, and each 8-pin bank has its own reg (L or H); e.g. pin 8's offset is _0_, within AFRH.
                 const AFR_OFFSET: usize = ($i % 8) * 4;
                 moder.moder().modify(|r, w| unsafe {
