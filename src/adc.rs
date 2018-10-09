@@ -243,12 +243,12 @@ where
     MODE: RunMode,
 {
     /// Create a new adc
-    pub fn new<'p, 'f, VDD, VCORE, RTC>(
+    pub fn new<VDD, VCORE, RTC>(
         raw: ADC,
         samp_time: Duration,
         clk_src: AdcClkSrc,
         pwr: &power::Power<VDD, VCORE, RTC>,
-        clk_ctx: &ClockContext<'p, 'f, VDD, VCORE, RTC>,
+        clk_ctx: &ClockContext,
         apb2: &mut rcc::APB2,
     ) -> Adc<RES, MODE>
     where

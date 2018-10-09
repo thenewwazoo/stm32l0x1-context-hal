@@ -97,12 +97,12 @@ macro_rules! hal {
 
                 /// Create a $USARTX peripheral to provide 8N1 asynchronous serial communication
                 /// with an oversampling rate of 16.
-                pub fn $usartX<'pwr, 'flash, VDD, VCORE, RTC>(
+                pub fn $usartX(
                     usart: $USARTX,
                     pins: (TX, RX),
                     baud_rate: Bps,
                     clk_src: USARTClkSource,
-                    clk_ctx: &ClockContext<'pwr, 'flash, VDD, VCORE, RTC>,
+                    clk_ctx: &ClockContext,
                     apb: &mut $APB,
                     ccipr: &mut CCIPR,
                 ) -> Self
@@ -298,12 +298,12 @@ hal! {
 impl<TX, RX> Serial<LPUART1, (TX, RX)> {
     /// Create a LPUART1 peripheral to provide 8N1 asynchronous serial communication
     /// with an oversampling rate of 16.
-    pub fn lpuart1<'pwr, 'flash, F, VDD, VCORE, RTC>(
+    pub fn lpuart1(
         usart: LPUART1,
         pins: (TX, RX),
         baud_rate: Bps,
         clk_src: USARTClkSource,
-        clk_ctx: &ClockContext<'pwr, 'flash, VDD, VCORE, RTC>,
+        clk_ctx: &ClockContext,
         apb: &mut APB1,
         ccipr: &mut CCIPR,
     ) -> Self

@@ -83,10 +83,7 @@ pub struct MonoTimer {
 impl MonoTimer {
     /// Creates a new `Monotonic` timer
     #[allow(needless_pass_by_value)]
-    pub fn new<'p, 'f, VDD, VCORE, RTC>(
-        mut dwt: DWT,
-        clocks: ClockContext<'p, 'f, VDD, VCORE, RTC>,
-    ) -> Self {
+    pub fn new(mut dwt: DWT, clocks: ClockContext) -> Self {
         dwt.enable_cycle_counter();
 
         // now the CYCCNT counter can't be stopped or resetted
