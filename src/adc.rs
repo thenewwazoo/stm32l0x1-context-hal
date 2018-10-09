@@ -5,7 +5,7 @@ use core::time::Duration;
 
 use gpio::Analog;
 use gpio::{PA0, PA1, PA2, PA3, PA4, PA5, PA6, PA7, PB0, PB1};
-use hal::analog::{AdcChannel, SingleMode};
+use hal::adc::{AdcChannel, Once};
 use nb;
 use power::{self, VCoreRange};
 use rcc::{self, ClockContext};
@@ -194,7 +194,7 @@ impl<RES, MODE> Adc<RES, MODE> {
     }
 }
 
-impl<WORD, RES, PIN> SingleMode<RES::Word, PIN> for Adc<RES, Single>
+impl<WORD, RES, PIN> Once<RES::Word, PIN> for Adc<RES, Single>
 where
     WORD: From<u16>,
     RES: Resolution<Word = WORD>,
